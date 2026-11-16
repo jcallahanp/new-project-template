@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T6 (improved template), sub-task T6d next.
+Phase: T6 (improved template), sub-task T6e next.
 
 ## Done
 
@@ -60,6 +60,12 @@ Phase: T6 (improved template), sub-task T6d next.
   a claim from a worker that changed nothing was dropped; alerts were silent without
   `notify-send`. Both fixed. Check (by the lead): self-test PASS; with the fix disabled the
   self-test blocks M1.T1 after 3 attempts with no judge (rc 1).
+- 2026-11-16: T6d done (Opus agent; commits `1796823`, `3340f2c`). C4 limits (hard or target, margin,
+  measure) required by `spec.py check` for numbers with units in statements; intake asks the three
+  questions; plan prompt judges targets on the median of 3. C8: 12 tasks per round, about 30 min.
+  Check (by the lead): on the real opencode-ui spec of approval day (`0ddec8c`) the check reports
+  9 limits, R24's 600 MB included (24 lines before the refinement); R24 passes with a target
+  entry; self-test PASS; prompt and skill diffs read.
 
 ## Waiting on John
 
