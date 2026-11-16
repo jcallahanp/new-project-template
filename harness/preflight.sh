@@ -12,6 +12,7 @@ CLAUDE="${HARNESS_CLAUDE:-claude}"
 echo "== tools =="
 for t in git python3 jq bash "$CLAUDE"; do command -v "$t" >/dev/null 2>&1 && ok "$t" || bad "$t is not installed or not on PATH"; done
 command -v tmux >/dev/null 2>&1 && ok "tmux (run survives a closed terminal)" || note "tmux missing: harness/run.sh will run in the foreground"
+command -v notify-send >/dev/null 2>&1 && ok "notify-send (desktop alerts)" || note "notify-send missing: stops and judge alerts will only be in .harness-run/alerts.log"
 command -v gh >/dev/null 2>&1 && ok "gh (pull request at the end)" || note "gh missing: the branch is pushed but you open the pull request yourself"
 
 echo "== spec =="

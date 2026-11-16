@@ -156,6 +156,7 @@ PY2
   || fail "want one judge leg for M1.T1 and one for M1.T3, both on attempt 2 (a claim on attempt 1 is ignored): $(grep '^JUDGE' "$calls")"
 first_notify=$(grep -n '^NOTIFY' "$calls" | head -1 | cut -d: -f1); t2_work=$(grep -n '^WORKER .* M1.T2$' "$calls" | head -1 | cut -d: -f1)
 [ -n "$first_notify" ] && [ "$first_notify" -lt "$t2_work" ] || fail "John was not notified at once when the judge agreed: $(cat "$calls")"
+grep -q 'M1.T1 blocked, its check needs John' .harness-run/alerts.log || fail "the alert is not in .harness-run/alerts.log"
 grep '^NOTIFY' "$calls" | head -1 | grep -q 'M1.T1 blocked, its check needs John: check wrong (judge agreed)' || fail "notification text: $(grep '^NOTIFY' "$calls")"
 grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-3.txt" || fail "the judge's reason for CHECK-OK is not in the next attempt's brief"
 grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-2.txt" && fail "mock: the judge's reason appeared before the judge ran"

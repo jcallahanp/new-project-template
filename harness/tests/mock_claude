@@ -13,7 +13,8 @@ logs "<KIND> <model> <effort> <task>" per call to $MOCK_STATE/calls; worker and 
 $MOCK_STATE/<kind>-<task>-<n>.txt.
 
 MOCK_SCENARIO=judge is a second, smaller run for the "check is wrong" path. M1.T1's check is impossible
-(2 + 3 must print 6): its worker claims CHECK-WRONG on attempts 1 and 2 and the judge agrees. M1.T2 is
+(2 + 3 must print 6): its worker claims CHECK-WRONG on attempts 1 and 2, changing nothing on attempt 2, and the
+judge agrees. M1.T2 is
 independent and passes; its check prints a line the verifier must see in its brief. M1.T3's worker fails
 attempts 1 and 2 with its own bug and claims CHECK-WRONG on both; the judge disagrees, and attempt 3 is
 right. No provider errors or limits in this scenario."""
@@ -77,13 +78,13 @@ if scenario == "judge" and kind == "PLANNER":
     out("3 tasks")
 if scenario == "judge" and kind == "WORKER":
     attempt = int(re.search(r"ATTEMPT: (\d+)", prompt).group(1))
-    write(f"notes/{tid}/attempt-{attempt}.md", f"attempt {attempt}\n")                # so a repeated attempt still changes something
     if tid == "M1.T1":
-        write("app/add.py", "import sys\nprint(int(sys.argv[1]) + int(sys.argv[2]))\n")
-        commit(f"{tid}: work")
+        if attempt == 1:                                                          # attempt 2: the code is right, nothing to change
+            write("app/add.py", "import sys\nprint(int(sys.argv[1]) + int(sys.argv[2]))\n")
+            commit(f"{tid}: work")
         out(f"add.py prints 5 for 2 3.\n\n**CHECK-WRONG:** the check wants 6 for 2 + 3; R1 says the sum, which is 5 (attempt {attempt})")
-    if tid == "M1.T3" and attempt < 3:
-        write("app/sub.py", "import sys\nprint(abs(int(sys.argv[1]) - int(sys.argv[2])))\n")
+    if tid == "M1.T3" and attempt < 3:                                            # a change on both attempts, still wrong
+        write("app/sub.py", "import sys\n" + "# a difference is never negative\n" * (attempt - 1) + "print(abs(int(sys.argv[1]) - int(sys.argv[2])))\n")
         commit(f"{tid}: work")
         out("CHECK-WRONG: a difference cannot be negative")
     write("app/sub.py", "import sys\nprint(int(sys.argv[1]) - int(sys.argv[2]))\n")

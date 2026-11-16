@@ -632,7 +632,11 @@ def work_leg(card, branch):
     if not r["ok"]:
         return False, r["text"], r, start, None
     if not kept:
-        return False, "the session changed nothing it is allowed to change" + (f" (undone: {', '.join(bad[:5])})" if bad else "") + note_denials(r), r, start, None
+        msg = "the session changed nothing it is allowed to change" + (f" (undone: {', '.join(bad[:5])})" if bad else "") + note_denials(r)
+        if card.get("attempts", 0) + 1 >= 2 and check_wrong_claim(r["text"]):     # "the check is wrong" needs no change: run it for the judge
+            ok, out = run_script(card["check"])
+            return False, msg + ("" if ok else f"\ntask check `{card['check']}` failed:\n{out}"), r, start, (ok, out, None, "")
+        return False, msg, r, start, None
     ok, out = run_script(card["check"])
     gok, gout = run_gates()
     msg = ""
@@ -646,7 +650,8 @@ def work_leg(card, branch):
 
 
 def verify_leg(card, start, branch, ran):
-    """`ran`: the loop's own (check ok, check output, gates ok, gates output) for this commit, given to the verifier."""
+    """`ran`: the loop's own (check ok, check output, gates ok, gates output) for this commit, given to the verifier
+    (gates ok is None when the gates were not run)."""
     head = git("rev-parse", "HEAD")
     reqs = {q["id"]: q for q in spec()["requirements"]}
     r = session("verify", brief(
@@ -798,7 +803,11 @@ def cmd_status(_):
 
 
 def notify(msg):
-    """Tell John now, with a desktop notification where one is available."""
+    """Tell John now: .harness-run/alerts.log and the run's output always, a desktop notification where available."""
+    RUN.mkdir(exist_ok=True)
+    with open(RUN / "alerts.log", "a") as f:
+        f.write(f"{utc()} {msg}\n")
+    print(f"ALERT: {msg}", flush=True)
     if shutil.which("notify-send"):
         subprocess.run(["notify-send", f"Build loop: {ROOT.name}", msg[:200]], check=False, capture_output=True)
 

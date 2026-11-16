@@ -24,8 +24,8 @@ merely satisfies the script.
 WHAT CHANGED ({{BASE}}..{{HEAD}}):
 {{STAT}}
 
-Inspect it yourself: `git diff {{BASE}} {{HEAD}}` and read the changed files. Use the product the way a
-user would where the criterion needs it (start it, call it, look at the output).
+Inspect it yourself: `git diff {{BASE}} {{HEAD}}` and read the changed files.
+Use the product the way a user would where you can (start it, call it, look at the output).
 Fail the work if any of these is true:
 - the criterion is not actually met, or only met for the exact case the check tests;
 - the output is hard-coded, stubbed, mocked or special-cased to make the check pass;
