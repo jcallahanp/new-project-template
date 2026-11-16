@@ -25,10 +25,12 @@ STORY = re.compile(r"^As an? .+, I want .+ so that .+", re.S | re.I)
 VAGUE = ["fast", "quick", "quickly", "easy", "easily", "simple", "user-friendly", "intuitive", "robust", "seamless", "seamlessly",
          "appropriate", "appropriately", "properly", "as needed", "etc", "and so on", "nice", "modern", "scalable", "efficient",
          "efficiently", "flexible", "reasonable", "good", "clean", "smooth", "minimal", "some", "various", "should"]
-# A number with a measurable unit. Each one in a statement or an example's `then` needs a `limits` entry that says
-# whether it is a hard limit or a target, the margin, and how it is measured (a rough estimate must not fail at +1 %).
-UNIT = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?(seconds?|sec|minutes?|min|hours?|ms|s|req/s|rps|[KMG]i?B|B|%)(?![A-Za-z/])", re.I)
-UNIT_ALIAS = {"second": "s", "seconds": "s", "sec": "s", "minute": "min", "minutes": "min", "hour": "h", "hours": "h", "rps": "req/s"}
+# A number with a measurable unit. Each one in a requirement's statement needs a `limits` entry that says whether it
+# is a hard limit or a target, the margin, and how it is measured (a rough estimate must not fail at +1 %). Numbers
+# in examples are concrete values (a banner showing "1040 MB") and need none.
+UNIT = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?(milliseconds?|seconds?|secs?|minutes?|mins?|hours?|ms|s|h|req/s|rps|[KMG]i?B|B|%)(?![A-Za-z/])", re.I)
+UNIT_ALIAS = {"millisecond": "ms", "milliseconds": "ms", "second": "s", "seconds": "s", "sec": "s", "secs": "s", "minute": "min",
+              "minutes": "min", "mins": "min", "hour": "h", "hours": "h", "rps": "req/s"}
 
 
 def unit_key(u):
@@ -62,6 +64,7 @@ def limit_problems(rid, r, text):
     have = {(num(x["value"]), unit_key(x.get("unit"))) for x in lims if isinstance(x.get("value"), (int, float)) and not isinstance(x.get("value"), bool)}
     for value, unit in UNIT.findall(text):
         if (num(value), unit_key(unit)) not in have:
+            have.add((num(value), unit_key(unit)))      # report each missing number once
             out.append(f"{rid}: \"{value} {unit}\" needs a `limits` entry with value {value} and unit {unit}: hard limit or target, "
                        "the margin, and how it is measured (ask John)")
     return out
@@ -124,7 +127,7 @@ def problems(s):
             ex = []
         if len(str(r.get("verify", ""))) < 20:
             out.append(f"{rid}: `verify` must say how a script can prove it (what it runs, what it observes)")
-        out += limit_problems(rid, r, " ".join([st] + [str(e.get("then", "")) for e in ex]))
+        out += limit_problems(rid, r, st)
         text = " ".join([st] + [str(e.get("then", "")) for e in ex]).lower()
         hits = [w for w in VAGUE if re.search(rf"(?<![a-z-]){re.escape(w)}(?![a-z-])", text)]
         if hits:

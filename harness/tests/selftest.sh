@@ -35,14 +35,16 @@ git init -q --bare "$repo.origin.git"; git remote add origin "$repo.origin.git";
 }
 make_repo "$tmp/repo"
 
-# numbers with a unit need a limits entry (hard or target, margin, measure); the self-test spec has none
+# numbers with a unit in a statement need a limits entry (hard or target, margin, measure); the self-test spec has none.
+# Numbers in examples need none; "3 s" matches a limit in "seconds"; a number named twice is reported once.
 mkdir -p "$tmp/lim/spec"; cp -r harness "$tmp/lim/"
-lim_spec() {   # $1: the R1 limits as JSON, or "" for none; writes the self-test spec with "under 600 MB" in R1
+lim_spec() {   # $1: the R1 limits as JSON, or "" for none; writes the self-test spec with "600 MB" (twice) and "3 s" in R1
 python3 -I - "$1" > "$tmp/lim/spec/requirements.json" <<'PY'
 import json, sys
 s = json.load(open("spec/requirements.json"))
 r = s["requirements"][0]
-r["statement"] = "When app/add.py is run with two integers, the system shall print their sum using under 600 MB of memory."
+r["statement"] = "When app/add.py is run with two integers, the system shall print their sum within 3 s using under 600 MB of memory (600 MB in total)."
+r["examples"][0]["then"] = "it prints 5 and the memory banner shows 1040 MB"
 if sys.argv[1]:
     r["limits"] = json.loads(sys.argv[1])
 print(json.dumps(s))
@@ -51,9 +53,11 @@ PY
 lim_spec ""
 python3 -I "$tmp/lim/harness/spec.py" check > "$tmp/lim.txt" 2>&1 && { echo "SELFTEST FAIL: \"under 600 MB\" with no limits entry passed spec.py check"; exit 1; }
 grep -q 'R1: "600 MB" needs a `limits` entry' "$tmp/lim.txt" || { echo "SELFTEST FAIL: no clear problem for 600 MB: $(cat "$tmp/lim.txt")"; exit 1; }
+[ "$(grep -c '"600 MB" needs' "$tmp/lim.txt")" = 1 ] || { echo "SELFTEST FAIL: 600 MB is not reported exactly once: $(cat "$tmp/lim.txt")"; exit 1; }
 lim_spec '[{"name": "memory", "value": 600, "unit": "MB", "kind": "target", "measure": "peak RSS during a 2-minute run, median of 3 runs"}]'
 python3 -I "$tmp/lim/harness/spec.py" check > "$tmp/lim.txt" 2>&1 && { echo "SELFTEST FAIL: a target limit without a margin passed spec.py check"; exit 1; }
-lim_spec '[{"name": "memory", "value": 600, "unit": "MB", "kind": "target", "margin": "10%", "measure": "peak RSS during a 2-minute run, median of 3 runs"}]'
+lim_spec '[{"name": "memory", "value": 600, "unit": "MB", "kind": "target", "margin": "10%", "measure": "peak RSS during a 2-minute run, median of 3 runs"},
+          {"name": "time", "value": 3, "unit": "seconds", "kind": "hard", "margin": 0, "measure": "wall time of one run, taken once"}]'
 python3 -I "$tmp/lim/harness/spec.py" render > "$tmp/lim.txt" 2>&1 || { echo "SELFTEST FAIL: a proper target limit was rejected: $(cat "$tmp/lim.txt")"; exit 1; }
 grep -q '^- memory: 600 MB, target (passes up to 600 MB + 10%); measured: peak RSS' "$tmp/lim/spec/REQUIREMENTS.md" || { echo "SELFTEST FAIL: render does not show the limit"; exit 1; }
 

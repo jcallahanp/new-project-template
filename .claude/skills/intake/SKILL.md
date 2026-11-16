@@ -122,8 +122,8 @@ How to write a requirement:
 - **Behaviour, not design.** No libraries, file layouts or vendors unless John required them; then
   they are constraints.
 - **Numbers instead of adjectives.** "within 2 seconds for 1,000 rows", not "fast".
-- **Every number with a unit gets a `limits` entry** (`spec.py check` insists): its `value` and
-  `unit` as written in the statement or example, `kind` `hard` or `target`, a `margin` (a target needs
+- **Every number with a unit in a statement gets a `limits` entry** (`spec.py check` insists): its
+  `value` and `unit` as written in the statement, `kind` `hard` or `target`, a `margin` (a target needs
   one, like "10%" or a number in the same unit; a hard limit has margin 0), and `measure`: what is
   measured, how often, how many runs. Ask John the three questions from step 2 for each one. A target
   passes up to value plus margin; a hard limit fails at the value. Leave `limits` out when there are none.
