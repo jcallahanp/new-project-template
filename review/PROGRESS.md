@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T6 (improved template), sub-task T6e next.
+Phase: T6 (improved template), sub-task T6f next.
 
 ## Done
 
@@ -73,6 +73,12 @@ Phase: T6 (improved template), sub-task T6e next.
   projects' vault tokens; shell `BAO_TOKEN` used; deploy approval forgeable in the working tree;
   deploy regex gaps; vault timeout crashes the loop; PEM values dropped; history not scanned; C12
   untested). Author is fixing them.
+- 2026-11-16: T6e done (Opus agent; commits `58374ec`, `98b8a24`, `6a7b9a5`). C10 vault per project
+  (read and write, only with the project's token file; shell tokens stripped; tripwire against
+  other projects), deploy only with `HARNESS_DEPLOY_BY=agent` from the approved spec, scope gate
+  with vault values and unpushed history (a leaking work leg is discarded), C11 preflight and token
+  file, C12 `spec/mcp.json`. Independent review: FAIL (8), FAIL (2), then fixed. Check (by the
+  lead): self-test PASS; guard table of 10 vault and deploy commands behaves as intended.
 
 ## Waiting on John
 
