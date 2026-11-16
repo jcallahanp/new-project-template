@@ -353,7 +353,7 @@ def session(kind, prompt, start, attempt=1):
             if time.time() > limit_until:
                 raise Stop(f"the {what} did not clear within {LIMIT_HOURS:g} h ({first}). Start the run again later; it resumes where it stopped.")
             pause(LIMIT_POLL, f"{what} ({first})")
-            model = own
+            model, waits = own, list(RETRY_WAITS)            # a fresh start: short retries are available again
             continue
         raise Stop(f"the session kept failing: {first}. Nothing was lost; start the run again once this is fixed.")
 

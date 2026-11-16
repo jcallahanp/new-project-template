@@ -83,6 +83,7 @@ grep -q "usage limit on claude-opus-5-5: running this work leg on claude-fable-5
 grep -q "usage limit on claude-opus-5-5: running this verify leg on claude-fable-5-2" "$tmp/run.log" || fail "the verify leg did not fall back on a usage limit"
 [ "$(grep -c 'waiting 1s: usage limit' "$tmp/run.log")" = 2 ] || fail "want two usage-limit waits (the plan leg, M2.T1 with both models limited), none for a fallback or a 429"
 [ "$(grep -c 'waiting 1s: rate limit that outlasted the retries' "$tmp/run.log")" = 1 ] || fail "the M1 round-2 plan leg did not wait out a persistent 429"
+grep -q "provider error, will retry (API Error: 529 overloaded" "$tmp/run.log" || fail "the 529 after the long wait was not retried"
 grep -q "rate limit that outlasted the retries on claude-opus-5-5: running this work leg on claude-fable-5-2" "$tmp/run.log" || fail "a persistent 429 on a work leg did not fall back"
 [ "$(grep '^PLANNER' "$MOCK_STATE/calls" | head -2 | sort -u)" = "PLANNER claude-fable-5-2 high -" ] || fail "the plan leg did not wait and retry on Fable"
 [ "$(grep '^WORKER .* M2.T1$' "$MOCK_STATE/calls" | cut -d' ' -f2 | tr '\n' ' ')" = "claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-fable-5-2 claude-opus-5-5 " ] || fail "M2.T1: want Opus x3 (429), Fable (limited), then Opus after the wait"

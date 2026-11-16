@@ -5,7 +5,7 @@ must survive: one provider error, a short 429 rate limit on M1.T3's first work l
 the first plan leg, on the first Opus work leg of M1.T2 and on M1.T3's first Opus verify leg, a usage
 a 429 on M2.T1's Opus work leg that outlasts the short retries (so it falls back) and a usage limit on
 its Fable fallback (waited out, then back on Opus), a 429 on the M1 round-2 plan leg that outlasts the
-short retries (waited out), an attempt to edit the ledger
+short retries (waited out) and is followed by one 529 (a short retry again), an attempt to edit the ledger
 and a check, a first M1.T1 that fails its check (so attempt 2 runs), a first version with a bug that only an acceptance check notices (so the milestone is planned
 again while R1 already passes), a bug that only the auditor notices, and VERDICT/GAP lines wrapped in
 markdown. Prints one JSON result line like Claude Code does, with usage (the auditor's has none), and
@@ -63,8 +63,12 @@ if kind == "DESIGN":
 if kind == "PLANNER":
     if count("planner") == 1:
         out(LIMIT, error=True)                                                    # a plan leg must wait this out
-    if "plan/M1.r2.jsonl" in prompt and count("rate-plan") <= 3:
-        out("Rate limit reached for claude-fable-5-2", error=True)                 # persists past the short retries: wait, never stop
+    if "plan/M1.r2.jsonl" in prompt:
+        n = count("rate-plan")
+        if n <= 3:
+            out("Rate limit reached for claude-fable-5-2", error=True)             # persists past the short retries: wait, never stop
+        if n == 4:
+            out("API Error: 529 overloaded", error=True)                          # after the long wait: short retries are back
     mid = re.search(r"milestone (M\d+)", prompt).group(1)
     plan_file = re.search(r"`(plan/M\d+\.r\d+\.jsonl)`", prompt).group(1)
     first = int(re.search(r'"id": "T(\d+)"', prompt).group(1))
