@@ -456,3 +456,31 @@ John's answers, 2026-11-16:
 12. RAM: earlyoom (`/etc/default/earlyoom`) kills at <5% RAM and <10% swap, Chrome/VS Code/Playwright first, avoids claude/opencode/node; alert via `/usr/local/bin/earlyoom-notify`.
 13. Usage: Max 20x, Fable limit separate (section 11); when a limit is hit the session stops until reset, and nothing switches model automatically.
 14. Reboots: `Unattended-Upgrade::Automatic-Reboot "false"` (`/etc/apt/apt.conf.d`), so no automatic restarts interrupt a run.
+
+## 13. T7 results (2026-11-16)
+
+### Step 1 (D1): new guard, hold file `~/.config/holds/opencode-ui`
+
+Old guard backed up to `~/.claude/hooks/guard.py.bak-2026-11-16`. All rows match.
+
+| Command | cwd | Expected | Actual |
+|---|---|---|---|
+| `bash harness/run.sh` | `/home/john/projects/autonomous-project-template` | allowed | allowed |
+| `bash harness/run.sh` | `/home/john/projects/opencode-ui` | BLOCKED | BLOCKED |
+| `python3 harness/loop.py run` | `/home/john/projects/opencode-ui` | BLOCKED | BLOCKED |
+| `python3 -I harness/loop.py status` | `/home/john/projects/opencode-ui` | allowed | allowed |
+| `bash checks/run_gates.sh` | `/home/john/projects/opencode-ui` | BLOCKED | BLOCKED |
+| `git -C ~/projects/opencode-ui push origin build/x` | `/home/john` | BLOCKED | BLOCKED |
+| `nmap -sV 10.0.0.1` | `/home/john` | BLOCKED | BLOCKED |
+| `doctl compute droplet create x` | `/home/john` | BLOCKED | BLOCKED |
+
+### Step 2 (D3): long-lived Claude token
+
+```text
+600 133
+CLAUDE_CODE_OAUTH_TOKEN=
+```
+
+### Step 3 (D5)
+
+Nothing to do now (wrangler and agent Chrome sign-ins wait until a project needs them).
