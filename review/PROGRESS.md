@@ -66,10 +66,17 @@ Phase: T6 (improved template), sub-task T6e next.
   Check (by the lead): on the real opencode-ui spec of approval day (`0ddec8c`) the check reports
   9 limits, R24's 600 MB included (24 lines before the refinement); R24 passes with a target
   entry; self-test PASS; prompt and skill diffs read.
+- 2026-11-16: T7 steps 1-3 done by John in Warp (commit `d55a9c1`; migration repo `91663b1`).
+  Check (by the lead): `review/inventory/droplet.md` section 13: all 8 guard rows match; token file
+  mode 600 with `CLAUDE_CODE_OAUTH_TOKEN=`. Vault step (`review/prompts/droplet-vault.md`) not run yet.
+- 2026-11-16: T6e (commit `58374ec`) failed independent review: 8 defects (a session can reach other
+  projects' vault tokens; shell `BAO_TOKEN` used; deploy approval forgeable in the working tree;
+  deploy regex gaps; vault timeout crashes the loop; PEM values dropped; history not scanned; C12
+  untested). Author is fixing them.
 
 ## Waiting on John
 
-Nothing for T6. T7 prompts will each need John's yes.
+Run `review/prompts/droplet-vault.md` in Warp (T7 vault step).
 
 ## Next
 
