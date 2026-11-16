@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T6 (improved template), sub-task T6f next.
+Phase: done. Release on `main`.
 
 ## Done
 
@@ -84,11 +84,19 @@ Phase: T6 (improved template), sub-task T6f next.
   periodic 30-day token per project. Check (by the lead): inventory section 14: round trip
   matches; the test token gets 403 on the `claude` mount. Open: no token renewal yet
   (`review/prompts/droplet-renew.md`).
+- 2026-11-16: T6f done (Sonnet agent, `c200cf9`): docs match the code. Final independent review
+  FAIL: README named the old template; sessions could write to the machine-wide `claude` vault
+  project when `vault-project` was not run; Ctrl+C left the session running. Fixed (`aa1849d`); the
+  lead added SIGHUP/SIGTERM handling (closed tmux window) with a self-test case. Check: self-test
+  PASS; with the handler removed the self-test fails ("still running after SIGHUP").
+- 2026-11-16: John said yes to a new `main` without `review/`. Token renewal deferred (John: not
+  essential today; tokens valid until 2026-12-16; prompt ready in `review/prompts/droplet-renew.md`).
 
 ## Waiting on John
 
-Run `review/prompts/droplet-renew.md` in Warp (T7 token renewal; tokens expire 2026-12-16).
+1. Set `main` as the default branch and mark the repo as a template in GitHub settings.
+2. Before 2026-12-16: run `review/prompts/droplet-renew.md` in Warp.
 
 ## Next
 
-T6a to T6f, one agent each, a separate reviewer after each. Then T7 (droplet prompts) and T8.
+Done after John's two settings. `main` holds the release; this branch keeps the review.
