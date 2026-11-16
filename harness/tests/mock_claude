@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Stand-in for `claude -p` used by selftest.sh. Reads the brief on stdin and does what a session of
 that kind would do for a toy project (two tiny CLI programs), including some bad behaviour the loop
-must survive: one provider error, a usage limit on the first plan leg and on the first Opus work leg of
-M1.T2, an attempt to edit the ledger and a check, a first M1.T1 that fails its check (so attempt 2
-runs), a first version with a bug that only an acceptance check notices (so the milestone is planned
+must survive: one provider error, a short 429 rate limit on M1.T3's first work leg, a usage limit on
+the first plan leg, on the first Opus work leg of M1.T2 and on M1.T3's first Opus verify leg, a usage
+limit on both models for M2.T1's work (waited out, then back on Opus), an attempt to edit the ledger
+and a check, a first M1.T1 that fails its check (so attempt 2 runs), a first version with a bug that only an acceptance check notices (so the milestone is planned
 again while R1 already passes), a bug that only the auditor notices, and VERDICT/GAP lines wrapped in
 markdown. Prints one JSON result line like Claude Code does, with usage (the auditor's has none), and
-logs "<KIND> <model> <effort>" per call to $MOCK_STATE/calls."""
+logs "<KIND> <model> <effort> <task>" per call to $MOCK_STATE/calls."""
 import json, os, re, subprocess, sys
 from pathlib import Path
 
@@ -48,8 +49,9 @@ def commit(msg):
 
 
 kind = re.match(r"You are (?:the |a )(\w+) session", prompt).group(1)
+tid = (re.search(r"TASK (M\d+\.T\d+)", prompt) or [None, "-"])[1]
 with open(state / "calls", "a") as f:
-    f.write(f"{kind} {model} {effort}\n")
+    f.write(f"{kind} {model} {effort} {tid}\n")
 if kind == "DESIGN":
     write("spec/DESIGN.md", "# Design\n\n" + "Two small Python command-line programs under app/. " * 20 + "\n\n## Running and testing\n\npython3 app/add.py 2 3\n")
     write("plan/milestones.json", json.dumps([{"id": "M1", "title": "Both calculators", "goal": "app/add.py and app/sub.py print the right result for integers.", "requirements": ["R1", "R2"]}]))
@@ -80,12 +82,15 @@ if kind == "PLANNER":
     write(plan_file, "".join(json.dumps(t) + "\n" for t in tasks))
     out(f"{len(tasks)} tasks")
 if kind == "WORKER":
-    tid = re.search(r"TASK (M\d+\.T\d+)", prompt).group(1)
     attempt = int(re.search(r"ATTEMPT: (\d+)", prompt).group(1))
     if count("worker") == 1:
         out('API Error: 524 {"title":"Error 524: A timeout occurred"}', error=True)   # provider hiccup: must be retried
     if tid == "M1.T2" and model == "claude-opus-5-5" and count("limit-work") == 1:
         out(LIMIT, error=True)                                                    # a work leg must switch model at once
+    if tid == "M1.T3" and count("rate-work") == 1:                                # short rate limit: same model, short wait
+        out('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"per-minute rate limit exceeded"}}', error=True)
+    if tid == "M2.T1" and count(f"both-{model}") == 1:                            # both models limited: wait, then own model
+        out(LIMIT, error=True)
     if tid == "M1.T1":
         add = "int(sys.argv[1]) + int(sys.argv[2])" if attempt > 1 else "int(sys.argv[1]) * int(sys.argv[2])"   # attempt 1 fails its check
         write("app/add.py", f"import sys\nprint({add})\n")
@@ -100,6 +105,8 @@ if kind == "WORKER":
     commit(f"{tid}: work")
     out("done")
 if kind == "VERIFIER":
+    if tid == "M1.T3" and model == "claude-opus-5-5" and count("limit-verify") == 1:
+        out(LIMIT, error=True)                                                    # a verify leg must switch model at once
     out("Looked at the diff and ran the check.\n\n> **VERDICT: PASS** — the change meets the criterion")   # markdown around the verdict
 if kind == "AUDITOR":                       # no usage fields: the loop must record zeros and no cost
     if count("audit") == 1:

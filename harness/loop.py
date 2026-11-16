@@ -23,7 +23,8 @@ gets a short brief, does one job, and exits. This script checks the result itsel
              milestone. PASS writes DELIVERY.md, pushes the branch and opens a pull request.
 
 A failed task is retried with the failure text (MAX_ATTEMPTS), then `blocked`. Provider errors
-(5xx, timeouts, overload) are retried with a pause and never count against a task. A usage limit on a
+(5xx, timeouts, overload, a short 429 rate limit) are retried on the same model with a pause and never
+count against a task. A usage limit on a
 work or verify leg (judged by scripts) runs that leg at once on the other model; any other usage limit
 is waited out. Every stop prints the reason and what is needed, and is written to .harness-run/last-stop.txt.
 Each leg's model, effort, tokens and cost estimate go into PROGRESS.md and the card's `legs` list.
@@ -36,8 +37,8 @@ Env: HARNESS_CLAUDE (default `claude`).
   A work leg for a task that already failed (attempt 2+) uses HARNESS_ESCALATE_MODEL (default
   claude-fable-5-2) unless HARNESS_MODEL_WORK is set.
   Effort per kind: HARNESS_EFFORT_<KIND>, else HARNESS_EFFORT, else high; an empty value omits --effort.
-  HARNESS_FALLBACK_MODEL: model a work or verify leg switches to on a usage limit (default: the other of
-  claude-fable-5-2 / claude-opus-5-5).
+  HARNESS_FALLBACK_MODEL: model a work or verify leg switches to on a usage limit (default, and when the
+  leg already runs on it: the other of claude-fable-5-2 / claude-opus-5-5).
   HARNESS_LIMIT_HOURS (how long to wait out a usage limit, default 8), HARNESS_LIMIT_POLL (seconds
   between tries while it lasts, default 900), HARNESS_RETRY_WAITS (comma-separated seconds between
   retries of a provider error).
@@ -88,9 +89,10 @@ DESIGN_PATHS = ["spec/DESIGN.md", "plan/milestones.json", "checks/check_project.
 PLAN_PATHS = ["plan", "checks/tasks", "checks/acceptance", "checks/check_project.sh"]
 WORK_FORBIDDEN = HARNESS + SPEC + STATE + ["spec/DESIGN.md", "plan", "checks"]
 
-TRANSIENT = re.compile(r"API Error:? ?(408|409|5\d\d)|overloaded|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|"
+TRANSIENT = re.compile(r"API Error:? ?(408|409|429|5\d\d)|rate.?limit|overloaded|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|"
                        r"fetch failed|under capacity|connection error|network error|internal server error|bad gateway", re.I)
-LIMIT = re.compile(r"usage limit|limit reached|rate.?limit|API Error:? ?429|out of (extra )?usage|quota|limit will reset", re.I)
+# a usage limit (plan quota, hours to reset) is not a short rate limit (429, retried like a provider error)
+LIMIT = re.compile(r"usage limit|(?<!rate )limit reached|out of (extra )?usage|quota|limit will reset", re.I)
 AUTH = re.compile(r"API Error:? ?40[13]|invalid api key|invalid x-api-key|authentication_error|please run /login|"
                   r"oauth token (has )?expired|not logged in", re.I)
 WAITED = [0.0]                                   # seconds spent pausing for the provider (not charged to the budget)
@@ -234,7 +236,9 @@ def effort_for(kind):
 
 
 def fallback_model(model):
-    return os.environ.get("HARNESS_FALLBACK_MODEL") or (OPUS if model == FABLE else FABLE)
+    """HARNESS_FALLBACK_MODEL, unless the leg is already on it: then the other model of the default pair."""
+    alt = os.environ.get("HARNESS_FALLBACK_MODEL")
+    return alt if alt and alt != model else (OPUS if model == FABLE else FABLE)
 
 
 def num(x, cast=int):

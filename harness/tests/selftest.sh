@@ -35,7 +35,7 @@ git init -q --bare "$tmp/origin.git"; git remote add origin "$tmp/origin.git"; g
 unset HARNESS_MODEL HARNESS_EFFORT HARNESS_ESCALATE_MODEL HARNESS_FALLBACK_MODEL
 for k in DESIGN PLAN WORK VERIFY AUDIT; do unset "HARNESS_MODEL_$k" "HARNESS_EFFORT_$k"; done
 export MOCK_STATE="$tmp/mock" HARNESS_CLAUDE="$src/harness/tests/mock_claude" HARNESS_RETRY_WAITS=0,0 HARNESS_LIMIT_POLL=1 \
-       HARNESS_EFFORT_VERIFY=medium
+       HARNESS_EFFORT_VERIFY=medium HARNESS_FALLBACK_MODEL=claude-opus-5-5   # = the Opus legs' own model: they must fall back to Fable
 set +e; python3 -I harness/loop.py run --no-push > "$tmp/run.log" 2>&1; rc=$?; set -e
 fail() { echo "SELFTEST FAIL: $1"; echo "--- run log ---"; cat "$tmp/run.log"; exit 1; }
 [ "$rc" = 0 ] || fail "loop exited $rc, expected 0"
@@ -62,7 +62,7 @@ legs = [g for c in cards.values() for g in c.get("legs", [])]
 assert {g["kind"] for g in legs} == {"design", "plan", "work", "verify", "audit"}, "not every leg kind was recorded"
 for g in legs:
     assert set(g) >= {"kind", "model", "effort", "fallback", "secs", "turns", "input", "output", "cache_read", "cache_write", "cost_usd"}, g
-    assert g["model"] == (F if g["kind"] in ("design", "plan", "audit") else O) or g["kind"] == "work", f"{g['kind']} leg ran on {g['model']}"
+    assert g["model"] == (F if g["kind"] in ("design", "plan", "audit") else O) or g["kind"] == "work" or g["fallback"], f"{g['kind']} leg ran on {g['model']}"
     assert g["effort"] == ("medium" if g["kind"] == "verify" else "high"), f"{g['kind']} effort {g['effort']}"
     if g["kind"] == "audit":
         assert (g["output"], g["cost_usd"]) == (0, None), "absent usage fields were not recorded as 0 / None"
@@ -71,12 +71,21 @@ for g in legs:
 work = lambda tid: [(g["model"], g["fallback"]) for g in cards[tid]["legs"] if g["kind"] == "work"]
 assert work("M1.T1") == [(O, False), (F, False)], f"M1.T1 work legs {work('M1.T1')}: want Opus, then Fable on the retry"
 assert work("M1.T2") == [(F, True)], f"M1.T2 work legs {work('M1.T2')}: want Fable after the Opus usage limit"
+assert work("M1.T3") == [(O, False)], f"M1.T3 work legs {work('M1.T3')}: a short 429 must retry on Opus"
+assert work("M2.T1") == [(O, False)], f"M2.T1 work legs {work('M2.T1')}: after a wait with both models limited, back to Opus"
+ver = [(g["model"], g["fallback"]) for g in cards["M1.T3"]["legs"] if g["kind"] == "verify"]
+assert ver == [(F, True)], f"M1.T3 verify legs {ver}: want Fable after the Opus usage limit"
+assert all((g["model"], g["fallback"]) == (O, False) for c in cards.values() if c["id"] != "M1.T3" for g in c.get("legs", []) if g["kind"] == "verify")
 others = [w for c in cards.values() if c.get("kind") == "task" and c["id"] not in ("M1.T1", "M1.T2") for w in work(c["id"])]
 assert others and all(w == (O, False) for w in others), f"other work legs {others}"
 PY
 grep -q "usage limit on claude-opus-5-5: running this work leg on claude-fable-5-2" "$tmp/run.log" || fail "the work leg did not fall back on a usage limit"
-[ "$(grep -c 'waiting 1s: usage limit' "$tmp/run.log")" = 1 ] || fail "want exactly one usage-limit wait (the plan leg's), none for the work leg"
-[ "$(grep '^PLANNER' "$MOCK_STATE/calls" | head -2 | sort -u)" = "PLANNER claude-fable-5-2 high" ] || fail "the plan leg did not wait and retry on Fable"
+grep -q "usage limit on claude-opus-5-5: running this verify leg on claude-fable-5-2" "$tmp/run.log" || fail "the verify leg did not fall back on a usage limit"
+[ "$(grep -c 'waiting 1s: usage limit' "$tmp/run.log")" = 2 ] || fail "want two usage-limit waits (the plan leg, M2.T1 with both models limited), none for a fallback or a 429"
+[ "$(grep '^PLANNER' "$MOCK_STATE/calls" | head -2 | sort -u)" = "PLANNER claude-fable-5-2 high -" ] || fail "the plan leg did not wait and retry on Fable"
+[ "$(grep '^WORKER .* M2.T1$' "$MOCK_STATE/calls" | cut -d' ' -f2 | tr '\n' ' ')" = "claude-opus-5-5 claude-fable-5-2 claude-opus-5-5 " ] || fail "M2.T1: want Opus, Fable (both limited), then Opus after the wait"
+[ "$(grep '^WORKER .* M1.T3$' "$MOCK_STATE/calls" | cut -d' ' -f2 | tr '\n' ' ')" = "claude-opus-5-5 claude-opus-5-5 " ] || fail "M1.T3: a short 429 must be retried on the same model"
+grep -q "provider error, will retry (API Error: 429" "$tmp/run.log" || fail "the short 429 was not retried as a provider error"
 grep -q '^- usage: work claude-opus-5-5 effort high: in 1000, out 200, cache read 5000, cache write 300 tokens, ~\$0.12' PROGRESS.md || fail "PROGRESS.md has no usage line for a work leg"
 grep -q '^- usage: work claude-fable-5-2 (fallback after a usage limit)' PROGRESS.md || fail "PROGRESS.md does not show the fallback"
 python3 -I harness/loop.py status > "$tmp/status.txt" 2>&1
@@ -104,8 +113,11 @@ assert with_env({}, loop.effort_for, "work") == "high" and with_env({"HARNESS_EF
 assert with_env({"HARNESS_EFFORT": "low", "HARNESS_EFFORT_AUDIT": "max"}, loop.effort_for, "audit") == "max"
 assert with_env({}, loop.fallback_model, F) == O and with_env({}, loop.fallback_model, O) == F
 assert with_env({"HARNESS_FALLBACK_MODEL": "y"}, loop.fallback_model, O) == "y"
+assert with_env({"HARNESS_FALLBACK_MODEL": F}, loop.fallback_model, F) == O, "an escalated Fable leg must still fall back to Opus"
+assert loop.classify('API Error: 429 {"error":{"type":"rate_limit_error"}}') == "transient" and loop.classify("Rate limit reached") == "transient"
+assert loop.classify("Claude AI usage limit reached · resets 3am") == "limit" and loop.classify("5-hour limit reached ∙ resets 3am") == "limit"
 PY
 # a spec edited after approval must stop the next run before it starts
 sed -i 's/"anything beyond integers"/"anything beyond whole numbers"/' spec/requirements.json; git commit -q -am "edit spec"
 if python3 -I harness/loop.py run --no-push >/dev/null 2>&1; then fail "the loop started with a spec that changed after approval"; fi
-echo "SELFTEST PASS ($(grep -c '^[0-9:]* leg ' "$tmp/run.log") legs: design, plan after a limit wait, work with escalation and limit fallback, verify, replan, audit gap, fix, audit, deliver; usage recorded)"
+echo "SELFTEST PASS ($(grep -c '^[0-9:]* leg ' "$tmp/run.log") legs: design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback, replan, audit gap, fix, audit, deliver; usage recorded)"
