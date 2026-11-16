@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T6 (improved template), sub-task T6b next.
+Phase: T6 (improved template), sub-task T6c next.
 
 ## Done
 
@@ -49,6 +49,12 @@ Phase: T6 (improved template), sub-task T6b next.
 - 2026-11-16: T6a done (Opus agent, commit `46ee902`). Check (by the lead): `harness/loop.py`,
   `.claude/agents/scout.md` and `critic.md` byte-identical to `opencode-ui` `feb4339`; self-test
   PASS (14 legs) with new cases for markdown VERDICT/GAP lines and a frozen-acceptance re-plan.
+- 2026-11-16: T6b done (Opus agent; commits `9ee9673`, `e0f9167`, `e1820df`, `5389a3b`). C1 model per
+  leg kind with escalation, C2 fallback on a usage limit for work/verify, C5 usage per leg.
+  Independent Opus review: PASS with 3 minor defects, then FAIL twice on new paths to a Stop (a
+  persistent 429 ended the run after ~22 min; a 529 after a long wait ended the run), each fixed
+  with a self-test case. Check (by the lead): self-test PASS (15 legs); removing the retry refill
+  makes the self-test stop on `529 overloaded` (rc 1).
 
 ## Waiting on John
 
