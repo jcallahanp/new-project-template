@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T1 (droplet inventory) waits for John. T2 and T3 done. T4 starts when T1 is in.
+Phase: T4 (findings) in review. Then T5: John approves the change list.
 
 ## Done
 
@@ -29,14 +29,21 @@ Phase: T1 (droplet inventory) waits for John. T2 and T3 done. T4 starts when T1 
   Key numbers: 127 legs, 14h40m in legs, 21h05m wall, 52 tasks done; work 64 %, verify 19 %, plan
   14 % of leg time; verify failed 2 of 54; 14 of 66 work legs failed (20.6 % of leg time); 3
   timeouts (11.9 %); 3 tasks needed John, all fixed by changing a check or the limit, not the product.
+- 2026-11-16: T1 done (John ran the Warp prompt; commit `7c4276b`): `review/inventory/droplet.md`.
+  Check (by the lead): sections 1 to 12 present; the Warp session redacted personal connector names.
+  Main facts: Max 20x, Fable is a separate limit; template run sessions denied `gh` and `~/.config`;
+  guard blocks `harness/run.sh` everywhere; no long-lived Claude token; vault is OpenBao via `secret`;
+  `claude -p` returns `usage` and `modelUsage`. Fixed the script filter that masked `total_cost_usd`.
+- 2026-11-16: T4 draft: `review/FINDINGS.md` (lead wrote it). Check: `python3
+  review/analysis/check_findings.py` -> 16 rows, 0 uncited. Independent Opus review running.
 
 ## Waiting on John
 
-1. Run `review/prompts/warp-inventory-prompt.md` in Warp (T1).
+1. T5: approve, change or drop each item C1 to C12 and D1, D3, D5 in `review/FINDINGS.md`.
 2. Confirm or correct the personas in `review/SPEC.md`.
 3. This repository is public. Make it private, or keep it public? The inventory filters personal
    data, but a private repo is safer for findings about your machine.
 
 ## Next
 
-T2 and T3 (run-data analysis), then T4 when T1 is in.
+After the review verdict: fix real findings, then T5 (John), then T6 and T7.

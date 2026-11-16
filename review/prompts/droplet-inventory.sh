@@ -142,5 +142,5 @@ end
 main | sed -E \
   -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g' \
   -e 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/<ip>/g' \
-  -e 's/\b(sk-|gh[pousr]_|github_pat_|xox.-|AKIA|bws_|0\.)[A-Za-z0-9._-]{12,}/<token>/g' \
+  -e 's/\b(sk-|gh[pousr]_|github_pat_|xox.-|AKIA|bws_)[A-Za-z0-9._-]{12,}/<token>/g' \
   -e 's/\b[A-Za-z0-9_-]{40,}\b/<long-string>/g'
