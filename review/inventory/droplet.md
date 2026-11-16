@@ -484,3 +484,53 @@ CLAUDE_CODE_OAUTH_TOKEN=
 ### Step 3 (D5)
 
 Nothing to do now (wrangler and agent Chrome sign-ins wait until a project needs them).
+
+## 14. T7 vault results (2026-11-16)
+
+### Layout (read-only, before changes)
+
+```text
+- Server: OpenBao 2.7.2, systemd openbao.service (user openbao), listens on 127.0.0.1:8200 only, no TLS, pebbledb, ui off.
+- Unseal: shamir 1 of 1; unseal key and root token in /etc/openbao/secure/init.json (root, 600).
+- Auth: token only. KV v2 mounts claude/ and silk/ (plus system mounts).
+- Policies: claude-agents = "claude/*" create/read/update/delete/list; silk-agents = "silk/*" the same.
+- Tokens: ~/.config/openbao/claude.token, silk.token (600, dir 700): service tokens, period 30 days.
+- ~/.local/bin/secret: --project <p> -> KV mount <p>/ and ~/.config/openbao/<p>.token (or BAO_TOKEN); value in field "value".
+- Token auth max TTL: 32 days (system default).
+```
+
+### Found and fixed: vault was sealed
+
+Auto-unseal (`/etc/systemd/system/openbao.service.d/10-unseal.conf`, `ExecStartPost=/usr/local/bin/openbao-unseal`)
+ran as user openbao and could not read the root-only init.json (PermissionError at the last start), so
+`secret` failed for every project. Pre-check: `/usr/local/bin/openbao-unseal` is root 755 (dir root 755).
+Changed to `ExecStartPost=+/usr/local/bin/openbao-unseal` (runs as root); `systemctl daemon-reload`,
+`systemctl restart openbao`: `Sealed false` with no manual unseal.
+
+### New script: `~/.local/bin/vault-project <name>`
+
+Creates KV v2 mount `<name>/`, policy `<name>-agents` (create/read/update/delete/list on `<name>/*`
+only), and an orphan periodic token (period 720h) with only that policy, written to
+`~/.config/openbao/<name>.token` (600). The admin token is read per command from init.json with sudo;
+never printed, exported or stored. Refuses reserved names and an existing token file.
+
+### Checks (test project `vault-selftest`)
+
+```text
+vault-project vault-selftest            exit 0; token file 600; policies default + vault-selftest-agents; period 30d; orphan
+secret set PING - (random, stdin)       stored
+secret get PING vs value                match
+secret ls                               PING
+selftest token: kv get on claude/       403 (denied)
+selftest token: kv list claude/         403 (denied)
+test key deleted                        ls -> (none)
+```
+
+The `vault-selftest` mount, policy and token remain (empty).
+
+### Open
+
+- The `claude` and `silk` tokens (period 30 days) expire 2026-12-16 unless renewed, and nothing renews
+  them. New `vault-project` tokens have the same period. Follow-up: a daily `bao token renew-self` per
+  token file (user timer).
+- For each new project: `vault-project <project-slug>` once before `bash harness/run.sh`.
