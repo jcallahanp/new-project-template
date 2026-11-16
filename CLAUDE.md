@@ -81,14 +81,19 @@ scripts, and will record it. The rules that matter most:
 ### Secrets
 
 - Names are in `spec/requirements.json`. Values live in one of two stores, never in git, never printed:
-  - **The vault** (on the droplet, when the `secret` helper is on PATH): the loop puts the project's
-    values in your environment and in every check's, with `BAO_TOKEN` and `SECRET_PROJECT` for this
-    project only. Use `$NAME`; `secret ls` lists names. A key you create (a secret with
-    `"created_by": "agent"`, for example an API key made in a web dashboard) is stored at once with
-    `printf '%s' "$value" | secret set NAME -`, never with the value on the command line.
+  - **The vault** (on the droplet, when the project has its own vault token): the loop puts the
+    project's values in your environment and in every check's, with `BAO_TOKEN` and `SECRET_PROJECT`
+    for this project only. Use `$NAME`; `secret ls` lists names. Never pass `--project`, change or
+    unset those two variables, or touch `~/.config/openbao`: other projects' keys are not yours.
+    A key you create (a secret with `"created_by": "agent"`, for example an API key made in a web
+    dashboard) is stored at once with `printf '%s' "$value" | secret set NAME -`, never with the
+    value on the command line.
   - **`.env`** otherwise, which you never read or print: `set -a; . ./.env; set +a; <command>`.
 - Push a key to a platform (`secret get NAME | wrangler secret put NAME`) or deploy only when the
-  approved spec says `"deploy": {"by": "agent"}`; otherwise the guard blocks it and deploying is John's.
+  approved spec says `"deploy": {"by": "agent"}`; otherwise deploying is John's.
+- `harness/guard.sh` blocks common deploy commands and other projects' vault access, but it is a
+  tripwire, not a boundary: sessions run as the same unix user as John's other projects (a separate
+  user would be the boundary). These rules hold whether or not the guard notices.
 - Never write a secret value into a file, a commit message, a test fixture or a log.
 
 ### Limits

@@ -167,16 +167,37 @@ def vault():
     return speclib.vault(spec()) if SPECJ.is_file() else None
 
 
+def deploy_by():
+    """`agent` only when the spec committed at HEAD (the leg's start) is the approved one and says deploy.by agent.
+    The working tree is not trusted: a session could edit it."""
+    try:
+        sj = subprocess.run(["git", "show", "HEAD:spec/requirements.json"], cwd=ROOT, capture_output=True, check=True).stdout
+        want = json.loads(subprocess.run(["git", "show", "HEAD:spec/APPROVED"], cwd=ROOT, capture_output=True, check=True).stdout)["sha256"]
+        ok = hashlib.sha256(sj).hexdigest() == want and json.loads(sj)["deploy"].get("by") == "agent"
+    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+        ok = False
+    return "agent" if ok else "john"
+
+
+def project_mcp():
+    """spec/mcp.json when it exists and is a JSON object with `mcpServers`, else None."""
+    f = ROOT / PROJECT_MCP
+    try:
+        return f if isinstance(json.loads(f.read_text()).get("mcpServers"), dict) else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def child_env():
     """Environment for checks: the shell's, plus the project's secrets (they stay out of git and out of the prompts).
     With the vault: the spec's secrets that exist in it, plus BAO_TOKEN and SECRET_PROJECT so that `secret get/set`
-    works for this project only. Without it: .env."""
-    env = dict(os.environ)
+    works for this project only. Without it: .env. A BAO_TOKEN / SECRET_PROJECT from the shell is never passed on."""
+    env = speclib.clean_env()
     if vault():
         try:
             vals, extra = speclib.vault_values(spec())
         except RuntimeError as e:
-            raise Stop(f"{e}. Check the vault (secret --project <project> ls), then start the run again.")
+            raise Stop(f"{e}. Check the vault (secret --project {speclib.slug(spec())} ls), then start the run again.")
         env.update(vals)
         env.update(extra)
         return env
@@ -276,7 +297,7 @@ def run_claude(kind, prompt, model, effort):
     """One fresh session. Returns {ok, text, turns, secs, denials, err, kind, model, effort, fallback, input,
     output, cache_read, cache_write, cost_usd, models} where err is None or
     'transient' | 'limit' | 'auth' | 'timeout' | 'other'. cost_usd is Claude Code's estimate at API list prices."""
-    mcp = [str(H / "mcp.json")] + ([str(ROOT / PROJECT_MCP)] if (ROOT / PROJECT_MCP).is_file() else [])
+    mcp = [str(H / "mcp.json")] + ([str(project_mcp())] if project_mcp() else [])
     cmd = [CLAUDE, "-p", "--settings", str(H / "run-settings.json"), "--strict-mcp-config", "--mcp-config", *mcp,
            "--output-format", "json", "--max-turns", LEG_TURNS[kind], "--model", model]
     if effort:
@@ -286,8 +307,10 @@ def run_claude(kind, prompt, model, effort):
     t0 = time.time()
     # Own process group + a watchdog: the whole session tree is killed at the limit, even if it hangs.
     # With the vault, a session gets the checks' environment: it can use the project's keys and `secret set` one it creates.
+    # HARNESS_DEPLOY_BY is what harness/guard.sh trusts: computed here from the committed, approved spec.
+    env = {**(child_env() if vault() else speclib.clean_env()), "HARNESS_DEPLOY_BY": deploy_by()}
     proc = subprocess.Popen(cmd, cwd=ROOT, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, start_new_session=True, env=child_env() if vault() else None)
+                            stderr=subprocess.PIPE, start_new_session=True, env=env)
     timed_out = []
 
     def stop():
@@ -473,11 +496,8 @@ def design_leg(card, branch):
             problems.append(f"{f} was not written")
         elif sh(["bash", "-n", f]).returncode != 0:
             problems.append(f"{f} has a syntax error")
-    if (ROOT / PROJECT_MCP).is_file():
-        try:
-            assert isinstance(json.loads((ROOT / PROJECT_MCP).read_text()).get("mcpServers"), dict)
-        except (ValueError, AttributeError, AssertionError):
-            problems.append(f'{PROJECT_MCP} must be a JSON object {{"mcpServers": {{...}}}}')
+    if (ROOT / PROJECT_MCP).is_file() and not project_mcp():
+        problems.append(f'{PROJECT_MCP} must be a JSON object {{"mcpServers": {{...}}}} (until it is, sessions do not get it)')
     ms = []
     try:
         ms = json.loads(MILESTONES.read_text())
@@ -871,7 +891,7 @@ def cmd_run(a):
     try:
         gates_ok = run_gates()[0]
     except Stop as e:
-        sys.exit(f"cannot start: {e}")
+        finish(str(e), 0, 3)
     if not gates_ok:
         sys.exit("cannot start: gates are failing before the run starts; fix them first (bash checks/run_gates.sh)")
     cards = load()

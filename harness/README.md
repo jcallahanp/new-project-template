@@ -82,6 +82,11 @@ the run, because later milestones build on it.
 
 - **No operating-system sandbox.** Sessions run as you, with a deny list and a command guard. Use this
   for your own projects, with secrets scoped to the project.
+- **The guard is a tripwire, not a boundary.** `harness/guard.sh` blocks common deploy commands (unless
+  the approved spec says `"deploy": {"by": "agent"}`) and a session's attempts to reach another vault
+  project (`secret --project`, changing or unsetting `BAO_TOKEN`/`SECRET_PROJECT`, `~/.config/openbao`).
+  Sessions run as the same unix user that owns every project's vault token file, so a determined
+  session could get around it; only a separate unix user per project would be a boundary.
 - **A requirement is only as good as its check.** The planner writes the acceptance checks and the
   auditor judges them, but a behaviour no script can observe will not be proven. The interview pushes
   such items into `human_gates`.

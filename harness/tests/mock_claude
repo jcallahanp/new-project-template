@@ -19,7 +19,8 @@ independent and passes; its check prints a line the verifier must see in its bri
 attempts 1 and 2 with its own bug and claims CHECK-WRONG on both; the judge disagrees, and attempt 3 is
 right. No provider errors or limits in this scenario.
 
-MOCK_SCENARIO=vault: a WORKER writes the names (never the values) of the environment variables it sees to
+MOCK_SCENARIO=vault: a WORKER writes its arguments to $MOCK_STATE/argv-<task>.txt, HARNESS_DEPLOY_BY to
+$MOCK_STATE/deploy-<task>.txt, the names (never the values) of the environment variables it sees to
 $MOCK_STATE/env-<task>.txt and the output of `secret ls` to $MOCK_STATE/ls-<task>.txt, then stores a key it
 "created" ($MOCK_AGENT_VALUE) with `secret set AGENT_KEY -`."""
 import json, os, re, subprocess, sys
@@ -70,6 +71,8 @@ with open(state / "calls", "a") as f:
 if kind in ("WORKER", "VERIFIER"):
     (state / f"{kind}-{tid}-{count(f'brief-{kind}-{tid}')}.txt").write_text(prompt)
 if scenario == "vault" and kind == "WORKER":
+    (state / f"argv-{tid}.txt").write_text("\n".join(argv) + "\n")
+    (state / f"deploy-{tid}.txt").write_text(os.environ.get("HARNESS_DEPLOY_BY", "unset") + "\n")
     (state / f"env-{tid}.txt").write_text("\n".join(sorted(os.environ)) + "\n")
     try:
         ls = subprocess.run(["secret", "ls"], capture_output=True, text=True)

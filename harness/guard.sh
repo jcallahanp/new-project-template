@@ -24,13 +24,18 @@ grep -Eq '(^|[^[:alnum:]_./-])(cat|less|more|head|tail|grep|rg|awk|sed|bat|strin
   && block "printing .env puts secrets in the conversation. Use them without printing: set -a; . ./.env; set +a; <command>"
 grep -Eq '(^|[|;&[:space:]])(printenv|env)[[:space:]]*($|[|;&>])' <<<"$cmd" && block "dumping the whole environment can print secrets. Print one named, non-secret variable instead."
 
-# Deploying and publishing are John's unless the approved spec says "deploy": {"by": "agent"}.
-if grep -Eq '(^|[^[:alnum:]_.-])(wrangler([[:space:]]+[^|;&]*)?[[:space:]](deploy|publish|secret[[:space:]]+(put|bulk))([[:space:]]|$)|vercel([[:space:]]+[^|;&]*)?[[:space:]]--prod|netlify[[:space:]]+deploy([[:space:]]+[^|;&]*)?[[:space:]]--prod|(fly|flyctl)[[:space:]]+deploy|npm[[:space:]]+publish|gh[[:space:]]+release)' <<<"$cmd"; then
-  s="$root/spec/requirements.json"
-  by=$(jq -r '.deploy.by // "john"' "$s" 2>/dev/null)
-  [ "$(jq -r .sha256 "$root/spec/APPROVED" 2>/dev/null)" = "$(sha256sum "$s" 2>/dev/null | cut -d' ' -f1)" ] || by=john
-  [ "$by" = agent ] || block "deploying and publishing are John's: the approved spec does not say \"deploy\": {\"by\": \"agent\"}. Say in your final message what is ready to deploy."
+# Deploying and publishing are John's unless the approved spec says "deploy": {"by": "agent"}. The loop works that
+# out from the committed, approved spec and sets HARNESS_DEPLOY_BY; a spec edited in the working tree changes nothing.
+if grep -Eq '(^|[^[:alnum:]_.-])(wrangler(@[^[:space:]]*)?([[:space:]]+[^|;&]*)?[[:space:]](deploy|publish|secret[[:space:]]+(put|bulk))([[:space:]:]|$)|vercel(@[^[:space:]]*)?([[:space:]]+[^|;&]*)?[[:space:]]--prod|netlify(-cli)?(@[^[:space:]]*)?[[:space:]]+deploy([[:space:]]+[^|;&]*)?[[:space:]]--prod|(fly|flyctl)[[:space:]]+deploy|cf[[:space:]]+deploy|(npm|pnpm|yarn|bun)[[:space:]]+(run[[:space:]]+)?(deploy|publish)([[:space:]:]|$)|gh[[:space:]]+release)' <<<"$cmd"; then
+  [ "${HARNESS_DEPLOY_BY:-john}" = agent ] || block "deploying and publishing are John's: the approved spec does not say \"deploy\": {\"by\": \"agent\"}. Say in your final message what is ready to deploy."
 fi
+
+# The vault: a session uses its own project only (the loop sets BAO_TOKEN and SECRET_PROJECT). Same unix user, so the
+# helper could fall back to another project's token file: this is a tripwire against that, not a boundary.
+grep -Eq '(^|[^[:alnum:]_.-])secret([[:space:]][^|;&]*)?[[:space:]]--project|(BAO_TOKEN|SECRET_PROJECT)=|unset[^|;&]*(BAO_TOKEN|SECRET_PROJECT)|(-u|--unset)[=[:space:]]*(BAO_TOKEN|SECRET_PROJECT)|\.config/openbao' <<<"$cmd" \
+  && block "the vault is used through this project's own BAO_TOKEN and SECRET_PROJECT only: no --project, no changing or unsetting them, no token files."
+grep -Eq '(^|[^[:alnum:]_.-])env[[:space:]]+(-[a-zA-Z]*i|--ignore-environment|-([[:space:]]|$))' <<<"$cmd" && grep -Eq '(^|[^[:alnum:]_.-])secret([[:space:]]|$)' <<<"$cmd" \
+  && block "running the vault helper with an emptied environment would use another project's token."
 
 # History rewrites and leaving the run branch.
 grep -Eq 'git[[:space:]]+(-[^|;&]*[[:space:]]+)?(rebase|filter-branch|filter-repo|reflog[[:space:]]+expire|update-ref[[:space:]]+-d)' <<<"$cmd" \

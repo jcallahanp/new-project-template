@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Secrets and size guard: no secret-shaped strings, no value from .env or of a spec secret in the environment
-# (the loop loads the vault's values there), no .env file and no file over 5 MB in git. Never prints a value.
+# Secrets and size guard: no secret-shaped strings, no value from .env, of a spec secret in the environment (the loop
+# loads the vault's values there) or of BAO_TOKEN in a tracked file or in a commit not yet on origin/main (a key
+# committed and removed again is still in the history), no .env file and no file over 5 MB in git. Never prints a value.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 rc=0
@@ -34,7 +35,7 @@ try:
     names = [x.get("name") for x in json.load(open("spec/requirements.json")).get("secrets", []) if isinstance(x, dict)]
 except (OSError, ValueError, AttributeError):
     names = []
-for k in names:
+for k in names + ["BAO_TOKEN"]:
     if isinstance(k, str) and len(os.environ.get(k, "")) >= 12:
         vals.add((k, os.environ[k]))
 bad = []
@@ -46,6 +47,10 @@ for path in subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=
     except OSError:
         continue
     bad += sorted({f"{path}: contains the value of {k}" for k, v in vals if v in data})
+if subprocess.run(["git", "rev-parse", "-q", "--verify", "origin/main"], capture_output=True).returncode == 0:
+    log = subprocess.run(["git", "log", "-p", "--no-color", "--no-ext-diff", "origin/main..HEAD"], capture_output=True,
+                         text=True, errors="replace").stdout
+    bad += sorted({f"a commit not yet on origin/main contains the value of {k}" for k, v in vals if v in log})
 if bad:
     print("  " + "\n  ".join(bad[:10])); sys.exit(1)
 PY

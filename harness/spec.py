@@ -7,8 +7,9 @@
   spec.py secrets    say which secrets named in the spec are missing from the store (exit 1 if a required one John
                      supplies is missing; secrets an agent creates during the run may be missing at the start)
 
-The secret store is the droplet's OpenBao vault when the `secret` helper is on PATH and the project has a token
-(~/.config/openbao/<project>.token, or BAO_TOKEN); otherwise `.env`. The vault project is the spec's `project` slug.
+The secret store is the droplet's OpenBao vault when the `secret` helper is on PATH and the project has its own token
+file ~/.config/openbao/<project>.token; otherwise `.env`. The vault project is the spec's `project` slug. A shell's
+BAO_TOKEN / SECRET_PROJECT are never used and never passed on.
 
 The build loop refuses to run unless spec/APPROVED matches the current JSON, so a spec edited after
 approval has to be approved again.
@@ -17,7 +18,6 @@ import hashlib
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -25,6 +25,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+RESERVED = {"claude", "silk"}                       # vault projects of the machine's own agents, never a template project
+LOOP_VARS = ("BAO_TOKEN", "SECRET_PROJECT", "HARNESS_DEPLOY_BY")   # set by the loop only, stripped from the shell's
 SPECJ = ROOT / "spec" / "requirements.json"
 EARS = re.compile(r"^(When|While|If|Where)\b.+\bshall\b.+|^The (system|[a-z][a-z -]{2,40}) shall\b.+", re.S)
 STORY = re.compile(r"^As an? .+, I want .+ so that .+", re.S | re.I)
@@ -95,6 +97,9 @@ def problems(s):
             out.append(f"`{key}` is missing or is not a {kind.__name__}")
     if out:
         return out
+    if slug(s) in RESERVED:
+        out.append(f"`project` {s['project']!r}: the vault projects {', '.join(sorted(RESERVED))} belong to the machine's own agents; "
+                   "choose another name")
     if len(s["summary"]) < 80:
         out.append("`summary` must say in a few sentences what is being built, for whom and why")
     if not s["users"]:
@@ -188,40 +193,55 @@ def slug(s):
 
 
 def vault(s):
-    """(project, token) when the droplet's OpenBao helper `secret` is the secret store for this project, else None."""
+    """(project, token) when the vault is this project's secret store: the `secret` helper is on PATH and the
+    project's own token file exists. Never a token from the shell, never a reserved project."""
     p = slug(s)
     f = Path.home() / ".config" / "openbao" / f"{p}.token"
-    if not shutil.which("secret"):
+    if not shutil.which("secret") or p in RESERVED or not f.is_file():
         return None
-    tok = f.read_text().strip() if f.is_file() else os.environ.get("BAO_TOKEN", "")
+    tok = f.read_text().strip()
     return (p, tok) if tok else None
 
 
+def clean_env(base=None):
+    """A copy of the environment without the shell's vault and deploy variables (only the loop sets them)."""
+    return {k: v for k, v in (os.environ if base is None else base).items() if k not in LOOP_VARS}
+
+
+def _secret(p, env, *args):
+    """Run the helper, retrying a few times with short pauses. Returns stdout; raises RuntimeError without any value."""
+    waits = [float(x) for x in os.environ.get("HARNESS_VAULT_WAITS", "2,5,15").split(",") if x.strip()]
+    why = ""
+    for wait in waits + [None]:
+        try:
+            r = subprocess.run(["secret", "--project", p, *args], capture_output=True, text=True, env=env,
+                               timeout=float(os.environ.get("HARNESS_VAULT_TIMEOUT", "30")))
+            if r.returncode == 0:
+                return r.stdout
+            why = f"exited {r.returncode}" + (f": {r.stderr.strip()[-200:]}" if args[0] == "ls" else "")
+        except subprocess.TimeoutExpired:
+            why = "did not answer in time"
+        except OSError as e:
+            why = f"could not run: {e.strerror}"
+        if wait is not None:
+            time.sleep(wait)
+    raise RuntimeError(f"the vault does not answer: `secret --project {p} {args[0]}{' NAME' if len(args) > 1 else ''}` {why} "
+                       f"({len(waits) + 1} tries)")
+
+
 def vault_values(s):
-    """The spec's secrets that exist in the vault as {NAME: value}, and the variables a session needs to use the vault
-    (BAO_TOKEN, SECRET_PROJECT). Names not in the vault yet are skipped. Raises RuntimeError (never with a value)
-    when the vault does not answer."""
+    """The spec's secrets that exist in the vault as {NAME: value} (each read with `secret get`, so multi-line values
+    such as PEM keys stay whole), and the variables a session needs for this project's vault only (BAO_TOKEN,
+    SECRET_PROJECT). Names not in the vault yet are skipped. Raises RuntimeError (never with a value)."""
     p, tok = vault(s)
     extra = {"BAO_TOKEN": tok, "SECRET_PROJECT": p}
-    env = {**os.environ, **extra}
-    r = subprocess.run(["secret", "--project", p, "ls"], capture_output=True, text=True, env=env, timeout=60)
-    if r.returncode:
-        raise RuntimeError(f"the vault does not answer: `secret --project {p} ls` exited {r.returncode} ({r.stderr.strip()[-200:]})")
-    stored = set(r.stdout.split())
-    names = [x["name"] for x in s.get("secrets", []) if isinstance(x, dict) and x.get("name") in stored]
+    env = {**clean_env(), **extra}
+    stored = set(_secret(p, env, "ls").split())
     vals = {}
-    if names:
-        r = subprocess.run(["secret", "--project", p, "env", *names], capture_output=True, text=True, env=env, timeout=60)
-        if r.returncode:
-            raise RuntimeError(f"`secret --project {p} env` exited {r.returncode}")     # stdout may hold values: never shown
-        for line in r.stdout.splitlines():
-            try:
-                parts = shlex.split(line)
-            except ValueError:
-                continue
-            if len(parts) == 2 and parts[0] == "export" and "=" in parts[1]:
-                k, v = parts[1].split("=", 1)
-                vals[k] = v
+    for x in s.get("secrets", []):
+        if isinstance(x, dict) and x.get("name") in stored:
+            v = _secret(p, env, "get", x["name"])
+            vals[x["name"]] = v[:-1] if v.endswith("\n") else v
     return vals, extra
 
 
