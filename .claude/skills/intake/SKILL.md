@@ -162,7 +162,9 @@ judgement: approval is John's.
 `created_by` is `john` (he supplies it before the run) or `agent` (a run session creates it, for
 example an API key made in a web dashboard, and stores it). `deploy.by` is `john` unless he wants the
 run to deploy and publish itself (`agent`). If the spec lists secrets John supplies, he puts the values
-in the vault when `secret` is on PATH (`secret --project <project> set NAME -`, value on stdin), else in
+in the vault when `secret` is on PATH (first, once per project, he runs `vault-project <project>` to
+create the project's vault area and token; then `secret --project <project> set NAME -`, value on
+stdin), else in
 `.env` himself (a copy of `.env.example` with the values filled in), in his editor, not in this
 conversation. `.env` is git-ignored. Then run
 `python3 harness/spec.py secrets` to confirm every required name has a value (it never prints one).
