@@ -1,0 +1,30 @@
+# Runs the same gate suite as the local pre-push hook on every push and pull request, so a
+# `git push --no-verify` still shows red. John merges every pull request himself.
+name: gates
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Install project dependencies (init.sh, once the design session has written it)
+        run: if [ -f init.sh ]; then bash init.sh; fi
+
+      - name: Harness self-test (mock sessions, no model calls)
+        run: bash harness/tests/selftest.sh
+
+      - name: Run gates (checks/run_gates.sh)
+        run: bash checks/run_gates.sh

@@ -73,9 +73,9 @@ Ranked by size. Leg time is the proxy for usage, because the ledger records no t
 
 Not proposed:
 
-- **Parallel tasks in separate worktrees.** This saves wall-clock time but uses the same quota. On
-  4 CPUs and 8 GB shared with a desktop, timing-sensitive checks are a risk: the run already had to
-  loosen a health timing test (`7901f58`). It also adds a layer.
+- **Parallel tasks in separate worktrees.** This saves wall-clock time but uses the same quota. Under
+  load, timing-sensitive checks are a risk: the run had to loosen a health timing test on the
+  14-CPU laptop (`7901f58`), and the droplet has 4 CPUs and 8 GB shared with a desktop. It also adds a layer.
 - **Dropping the verifier, or lowering its effort.** It failed only 2 of 54 times, but it is the
   defense against gamed checks. C1 and C6 make it cheaper instead.
 
@@ -111,7 +111,7 @@ Blockers and risks found with the inventory (`review/inventory/droplet.md`):
 
 | # | Problem | Evidence | Fix | Where |
 |---|---|---|---|---|
-| D1 | The guard hook blocks `bash harness/run.sh` in every project, so `/intake` cannot launch a run. It also blocks opencode-ui gates when a command names that path, which can fail workers after the restart | inventory section 5 | Hold only `~/projects/opencode-ui`, through a hold file John deletes to release it | droplet (T7) |
+| D1 | The guard hook blocks `bash harness/run.sh` in every project, so `/intake` cannot launch a run. It also blocks opencode-ui gates when a command names that path; if the guard loads in `--settings` runs (tested in T6), this fails workers after the restart | inventory section 5 | Hold only `~/projects/opencode-ui`, through a hold file John deletes to release it | droplet (T7) |
 | D2 | Template sessions cannot use the vault or `gh`: `Read(~/.config/**)` and `Bash(gh:*)` are denied. The deny list also names old-laptop paths | inventory section 9; `harness/run-settings.json:7-11` | C10 | template |
 | D3 | No long-lived Claude token: `~/.config/claude/oauth.env` is missing, so unattended runs stop when the login expires | inventory sections 2 and 12 | John runs `claude setup-token` once (T7). C11: `run.sh` loads that file when present, and preflight warns when `credential_expires_at` (returned by `claude -p`, inventory section 9) is earlier than the end of the run budget | droplet and template |
 | D4 | The template's secrets model is "John fills `.env`". On the droplet the vault is OpenBao through the `secret` helper, not Bitwarden | inventory section 7 | C10 | template |
@@ -124,9 +124,11 @@ Template changes for the droplet:
 
 - **C10 secrets, scoped.** The loop, not the model, reads secrets: `child_env()` loads only the
   secret names in the approved spec, through `secret env` when the helper exists, else from `.env`.
-  Each project uses its own vault token that can read only that project's keys. Run sessions get no
-  vault token, keep the `~/.config` read deny, and may only `secret set` keys that the spec marks
-  `created_by: agent`. Deploy commands (`wrangler deploy` and the like) are denied in run sessions
+  Each project has two vault tokens with OpenBao policies: a read token for the loop (only that
+  project's keys), and a write-only token (`create`/`update`, no `read`) for keys under the
+  project's `agent/` path. The loop passes only the write-only token to run sessions as
+  `BAO_TOKEN`, so a worker can `secret set` a key it creates (spec: `created_by: agent`) but
+  `secret get` fails. Run sessions keep the `~/.config` read deny. Deploy commands (`wrangler deploy` and the like) are denied in run sessions
   unless the approved spec lists the deploy. Old-laptop paths leave the deny list.
 - **C11 preflight for the droplet:** token expiry, vault reachable, the spec's secrets present,
   heavy desktop processes, and `run.sh` loads `~/.config/claude/oauth.env` when present.
@@ -148,5 +150,5 @@ D5 sign-ins.
 On the opencode-ui run (52,815 s of leg time), C1 moves about 43,700 s of legs off Fable; Fable
 keeps design, plan, audit and retries, about 17 % of leg time plus retries. With Fable use that
 low, the Fable limit should seldom be reached, and C2 covers work legs when it is. C3 and C4 cut the
-failed attempts behind wrong checks and noisy limits (up to 5,822 s in this run) and tell John
-earlier. These are estimates from leg time, not measured tokens. C5 makes the next run measure them.
+failed attempts behind wrong checks and noisy limits (up to about 4,040 s in this run: 469 s of
+3rd attempts and 3,573 s of the 600 MB case) and tell John earlier. These are estimates from leg time, not measured tokens. C5 makes the next run measure them.

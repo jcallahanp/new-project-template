@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Stand-in for `claude -p` used by selftest.sh. Reads the brief on stdin and does what a session of
+that kind would do for a toy project (two tiny CLI programs), including some bad behaviour the loop
+must survive: one provider error, an attempt to edit the ledger and a check, a first version with a
+bug that only the auditor notices. Prints one JSON result line like Claude Code does."""
+import json, os, re, subprocess, sys
+from pathlib import Path
+
+state = Path(os.environ["MOCK_STATE"]); state.mkdir(parents=True, exist_ok=True)
+prompt = sys.stdin.read()
+
+
+def count(name):
+    f = state / name
+    n = int(f.read_text()) + 1 if f.exists() else 1
+    f.write_text(str(n))
+    return n
+
+
+def out(text, error=False):
+    print(json.dumps({"type": "result", "subtype": "success", "is_error": error, "result": text, "num_turns": 3, "permission_denials": []}))
+    sys.exit(1 if error else 0)
+
+
+def write(path, text, mode=None):
+    p = Path(path); p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text)
+    if mode: p.chmod(mode)
+
+
+def commit(msg):
+    subprocess.run(["git", "add", "-A"], check=True)
+    subprocess.run(["git", "commit", "-q", "-m", msg], check=True)
+
+
+kind = re.match(r"You are (?:the |a )(\w+) session", prompt).group(1)
+if kind == "DESIGN":
+    write("spec/DESIGN.md", "# Design\n\n" + "Two small Python command-line programs under app/. " * 20 + "\n\n## Running and testing\n\npython3 app/add.py 2 3\n")
+    write("plan/milestones.json", json.dumps([{"id": "M1", "title": "Both calculators", "goal": "app/add.py and app/sub.py print the right result for integers.", "requirements": ["R1", "R2"]}]))
+    write("checks/check_project.sh", '#!/usr/bin/env bash\nls app/*.py >/dev/null 2>&1 || { echo "  no app yet: skipped"; exit 0; }\npython3 -m py_compile app/*.py && echo "  compiles"\n')
+    write("init.sh", "#!/usr/bin/env bash\necho nothing to install\n")
+    out("stack: python; 1 milestone; risk: none")
+if kind == "PLANNER":
+    mid = re.search(r"milestone (M\d+)", prompt).group(1)
+    plan_file = re.search(r"`(plan/M\d+\.r\d+\.jsonl)`", prompt).group(1)
+    first = int(re.search(r'"id": "T(\d+)"', prompt).group(1))
+    if mid == "M1":
+        tasks = [{"id": f"T{first}", "title": "Write app/add.py", "acceptance": "python3 app/add.py 2 3 prints 5 on one line", "requirements": ["R1"], "files": ["app/add.py"], "depends_on": []},
+                 {"id": f"T{first + 1}", "title": "Write app/sub.py", "acceptance": "python3 app/sub.py 5 3 prints 2 on one line", "requirements": ["R2"], "files": ["app/sub.py"], "depends_on": [f"T{first}"]}]
+        write(f"checks/tasks/M1.T{first}.sh", '[ "$(python3 app/add.py 2 3)" = 5 ]\n')
+        write(f"checks/tasks/M1.T{first + 1}.sh", '[ "$(python3 app/sub.py 5 3)" = 2 ]\n')
+        write("checks/acceptance/R1.sh", '[ "$(python3 app/add.py 2 3)" = 5 ] && [ "$(python3 app/add.py -1 1)" = 0 ]\n')
+        write("checks/acceptance/R2.sh", '[ "$(python3 app/sub.py 5 3)" = 2 ]\n')
+    else:                                   # audit-fix milestone: expose the gap with a failing check
+        tasks = [{"id": f"T{first}", "title": "Fix app/sub.py for negative results", "acceptance": "python3 app/sub.py 2 5 prints -3 on one line", "requirements": ["R2"], "files": ["app/sub.py"], "depends_on": []}]
+        write(f"checks/tasks/{mid}.T{first}.sh", '[ "$(python3 app/sub.py 2 5)" = -3 ]\n')
+        write("checks/acceptance/R2.sh", '[ "$(python3 app/sub.py 5 3)" = 2 ] && [ "$(python3 app/sub.py 2 5)" = -3 ]\n')
+        write("checks/acceptance/R1.sh", "exit 0\n")           # not allowed (R1 is frozen): the loop must undo this
+    write(plan_file, "".join(json.dumps(t) + "\n" for t in tasks))
+    out(f"{len(tasks)} tasks")
+if kind == "WORKER":
+    tid = re.search(r"TASK (M\d+\.T\d+)", prompt).group(1)
+    if count("worker") == 1:
+        out('API Error: 524 {"title":"Error 524: A timeout occurred"}', error=True)   # provider hiccup: must be retried
+    if tid == "M1.T1":
+        write("app/add.py", "import sys\nprint(int(sys.argv[1]) + int(sys.argv[2]))\n")
+        with open("ledger.jsonl", "a") as f: f.write('{"id": "FAKE", "kind": "task", "state": "done"}\n')   # tampering: must be undone
+        write("checks/tasks/M1.T2.sh", "exit 0\n")                                                          # tampering: must be undone
+    elif tid == "M1.T2":
+        write("app/sub.py", "import sys\nprint(abs(int(sys.argv[1]) - int(sys.argv[2])))\n")                # bug the first checks miss
+    else:
+        write("app/sub.py", "import sys\nprint(int(sys.argv[1]) - int(sys.argv[2]))\n")
+    commit(f"{tid}: work")
+    out("done")
+if kind == "VERIFIER":
+    out("Looked at the diff and ran the check.\nVERDICT: PASS")
+if kind == "AUDITOR":
+    if count("audit") == 1:
+        out("GAP: R2 - app/sub.py 2 5 prints 3, not -3 (it takes the absolute value)\nVERDICT: FAIL")
+    out("Tried every example by hand.\nVERDICT: PASS")
+out("unknown brief", error=True)

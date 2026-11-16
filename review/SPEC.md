@@ -1,6 +1,6 @@
 # SPEC: cost and time review of `autonomous-project-template`
 
-Status: answers from John recorded 2026-11-16. Personas wait for John's confirmation.
+Status: approved by John 2026-11-16 (personas confirmed).
 
 ## Context (John, 2026-11-16)
 
@@ -31,7 +31,7 @@ can use to create its own API keys).
    failed three times at 601 to 609 MB and cost about $50)?
 4. Is it ready for a VM with full control and a secrets manager?
 
-## Personas (draft, confirm with John)
+## Personas (confirmed by John, 2026-11-16)
 
 - "I am John, using the template on a Linux VM. I describe a project and approve the spec. I trust
   the run to deliver a correct, verified project. I never pay Fable prices for routine work, and I

@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# pre-push hook: run the authoritative gate suite before anything leaves this machine.
+# A non-zero exit from checks/run_gates.sh aborts the push. Install with harness/install-hooks.sh.
+#
+# Note: the gates check the current working tree (what you have checked out), which for the
+# normal "commit, then push" flow is the commit being pushed. The pre-merge CI workflow
+# (.github/workflows/gates.yml) re-runs the same gates on the exact pushed commit / PR, so a
+# `git push --no-verify` still shows red on the PR.
+set -uo pipefail
+top=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "pre-push: not inside a git work tree" >&2; exit 1; }
+cd "$top" || exit 1
+if [[ ! -f checks/run_gates.sh ]]; then
+  echo "pre-push: checks/run_gates.sh missing — refusing to push without gates" >&2
+  exit 1
+fi
+echo "pre-push: running checks/run_gates.sh ..." >&2
+if bash checks/run_gates.sh >&2; then
+  exit 0
+fi
+echo "pre-push: GATES FAILED — push blocked. Fix the failing gate (see output above)." >&2
+exit 1

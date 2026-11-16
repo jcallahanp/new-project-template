@@ -1,0 +1,21 @@
+# secrets: never committed
+.env
+.env.local
+.env.production
+
+# harness runtime files (log, lock, last stop reason)
+.harness-run/
+
+# common dependency and build folders (the design session adds its stack's own)
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+dist/
+build/
+target/
+.next/
+coverage/
+.pytest_cache/
+.DS_Store

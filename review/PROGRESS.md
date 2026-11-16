@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T4 (findings) in review. Then T5: John approves the change list.
+Phase: T6 (improved template), sub-task T6a next.
 
 ## Done
 
@@ -36,14 +36,21 @@ Phase: T4 (findings) in review. Then T5: John approves the change list.
   `claude -p` returns `usage` and `modelUsage`. Fixed the script filter that masked `total_cost_usd`.
 - 2026-11-16: T4 draft: `review/FINDINGS.md` (lead wrote it). Check: `python3
   review/analysis/check_findings.py` -> 16 rows, 0 uncited. Independent Opus review running.
+- 2026-11-16: T4 done. Independent Opus review: revision 1 FAIL (11 findings), revision 2 FAIL
+  (4 small items), all 4 fixed in revision 3 as the reviewer specified. Check:
+  `check_findings.py` -> 17 rows, 0 uncited. Main changes after review: C2 falls back only for work
+  and verify; C3 needs a verifier to agree and starts at attempt 2; C10 uses a write-only vault
+  token for run sessions; savings figures corrected.
+- 2026-11-16: T5 done. John approved the change list, kept the repo public, confirmed the personas.
+- 2026-11-16: T6 base: template `5c4290e` copied to the repo root (`git archive`). Check: `diff -rq`
+  against the template shows no difference except `review/`; `bash harness/tests/selftest.sh` ->
+  SELFTEST PASS. Added `CLAUDE.md` step 0 so sessions in this repo follow `review/`. T6 split into
+  T6a to T6f; T8 added (keep `review/` out of `main`).
 
 ## Waiting on John
 
-1. T5: approve, change or drop each item C1 to C12 and D1, D3, D5 in `review/FINDINGS.md`.
-2. Confirm or correct the personas in `review/SPEC.md`.
-3. This repository is public. Make it private, or keep it public? The inventory filters personal
-   data, but a private repo is safer for findings about your machine.
+Nothing for T6. T7 prompts will each need John's yes.
 
 ## Next
 
-After the review verdict: fix real findings, then T5 (John), then T6 and T7.
+T6a to T6f, one agent each, a separate reviewer after each. Then T7 (droplet prompts) and T8.
