@@ -687,6 +687,16 @@ def work_leg(card, branch):
         return False, msg, r, start, None
     ok, out = run_script(card["check"])
     gok, gout = run_gates()
+    if not gok and "FAIL (check_scope)" in gout:
+        # The gates passed when this leg started, so the leg committed a secret value (or a file over 5 MB). Its commits
+        # are not pushed yet (the loop pushes at milestone close): drop them, or the history keeps the gates red.
+        git("reset", "-q", "--hard", start)
+        sh(["git", "clean", "-qfd"])
+        scope = "\n".join(l for l in gout.splitlines() if "contains the value of" in l or "over 5 MB" in l or "secret-shaped" in l)
+        msg = ("check_scope failed: a secret value (or a file over 5 MB) was committed, so the whole leg was discarded "
+               f"(reset to {start[:12]}). Never write a secret value into a file or a commit; use it from the environment.\n{scope}")
+        notify(f"{card['id']}: a secret value was committed; the leg was discarded and the task retries")
+        return False, msg + note_denials(r), r, start, None
     msg = ""
     if bad:
         msg += f"edits to protected paths were undone: {', '.join(bad[:6])}\n"

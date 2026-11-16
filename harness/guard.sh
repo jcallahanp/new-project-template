@@ -32,7 +32,11 @@ fi
 
 # The vault: a session uses its own project only (the loop sets BAO_TOKEN and SECRET_PROJECT). Same unix user, so the
 # helper could fall back to another project's token file: this is a tripwire against that, not a boundary.
-grep -Eq '(^|[^[:alnum:]_.-])secret([[:space:]][^|;&]*)?[[:space:]]--project|(BAO_TOKEN|SECRET_PROJECT)=|unset[^|;&]*(BAO_TOKEN|SECRET_PROJECT)|(-u|--unset)[=[:space:]]*(BAO_TOKEN|SECRET_PROJECT)|\.config/openbao' <<<"$cmd" \
+cmd_at='(^|[|;&(`]|\$\()[[:space:]]*'                          # where a command starts
+assigns='([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'           # VAR=value prefixes
+helper="${cmd_at}${assigns}(env([[:space:]]+[^|;&[:space:]]+)*[[:space:]]+)?(command[[:space:]]+)?secret"
+vars='(BAO_TOKEN|SECRET_PROJECT)'
+grep -Eq "${helper}([[:space:]]+[^|;&[:space:]]+)*[[:space:]]+--project([[:space:]=]|\$)|${cmd_at}${assigns}${vars}=|(^|[^[:alnum:]_.-])(export|env)([[:space:]]+[^|;&]*)?[[:space:]]${vars}=|(^|[^[:alnum:]_.-])unset([[:space:]]+[^|;&]*)?[[:space:]]${vars}([[:space:]|;&)]|\$)|(^|[^[:alnum:]_.-])env([[:space:]]+[^|;&]*)?[[:space:]](-u|--unset)[=[:space:]]*${vars}|\.config/openbao" <<<"$cmd" \
   && block "the vault is used through this project's own BAO_TOKEN and SECRET_PROJECT only: no --project, no changing or unsetting them, no token files."
 grep -Eq '(^|[^[:alnum:]_.-])env[[:space:]]+(-[a-zA-Z]*i|--ignore-environment|-([[:space:]]|$))' <<<"$cmd" && grep -Eq '(^|[^[:alnum:]_.-])secret([[:space:]]|$)' <<<"$cmd" \
   && block "running the vault helper with an emptied environment would use another project's token."

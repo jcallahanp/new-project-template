@@ -252,6 +252,15 @@ for name, val in (("SC_API_KEY", os.environ["EXPECT_SC"]), ("BAO_TOKEN", os.envi
     assert val not in out, "check_scope printed the value"
     loop.git("reset", "-q", "--hard", "HEAD~2")
 ok, out = loop.run_gates(); assert ok, f"gates fail once the leak is gone: {out}"
+# a work leg that commits a key (and removes it again) is discarded whole, so the next task's gates pass
+start = loop.git("rev-parse", "HEAD")
+card = {"id": "M9.T9", "title": "leaky task", "acceptance": "app.py prints ok", "check": "true", "files": ["app.py"], "attempts": 0}
+ok, msg, r, _, ran = loop.work_leg(card, "main")
+assert not ok and "a secret value (or a file over 5 MB) was committed, so the whole leg was discarded" in msg and "SC_API_KEY" in msg, msg
+assert os.environ["EXPECT_SC"] not in msg, "the failure note holds the value"
+assert loop.git("rev-parse", "HEAD") == start and not os.path.exists("app.py"), "the leaky leg's commits were kept"
+ok, out = loop.run_gates(); assert ok, f"the next task's gates fail after a discarded leaky leg: {out}"
+assert "M9.T9: a secret value was committed" in open(".harness-run/alerts.log").read(), "John was not alerted"
 PY
 # a vault that does not answer ends the run through finish(): a clear stop and an alert, no traceback
 set +e; env "${vault_env[@]}" FAKE_VAULT_HANG=1 HARNESS_VAULT_TIMEOUT=0.5 python3 -I harness/loop.py run --no-push > "$tmp/hang.txt" 2>&1; rc=$?; set -e
@@ -295,11 +304,14 @@ guard() {   # $1: HARNESS_DEPLOY_BY or "", $2: the command; exit 2 = blocked
 }
 for c in "wrangler deploy" "npx wrangler@3.9 deploy" "npm run deploy" "pnpm publish" "yarn publish" "npx netlify-cli deploy --prod" "cf deploy" \
          "env -u BAO_TOKEN secret --project claude ls" "BAO_TOKEN= secret ls" "unset BAO_TOKEN; secret ls" "env -u SECRET_PROJECT secret ls" \
-         "SECRET_PROJECT=claude secret ls" "cat ~/.config/openbao/claude.token" "env -i secret ls"; do
+         "SECRET_PROJECT=claude secret ls" "cat ~/.config/openbao/claude.token" "env -i secret ls" "secret --project=claude ls" \
+         "export SECRET_PROJECT=claude" "x=\$(secret --project claude get K)"; do
   if guard "" "$c"; then fail "the guard let '$c' through"; fi
 done
-for c in "secret ls" "printf %s \"\$K\" | secret set NAME -" "npm run build" "wrangler dev"; do guard "" "$c" || fail "the guard blocked '$c'"; done
+for c in "secret ls" "printf %s \"\$K\" | secret set NAME -" "npm run build" "wrangler dev" "grep BAO_TOKEN= src" "grep -rn unset src"; do guard "" "$c" || fail "the guard blocked '$c'"; done
 guard agent "npx wrangler@3.9 deploy" || fail "the guard blocked a deploy with HARNESS_DEPLOY_BY=agent"
+guard agent "secret get K | npx wrangler pages secret put K --project-name site" || fail "the guard took wrangler's --project-name for the vault's --project"
+guard agent "secret get K | npx wrangler pages secret put K --project site" || fail "the guard took another tool's \`secret\` subcommand for the vault helper"
 mkdir -p "$tmp/dep/spec"; cp -r harness "$tmp/dep/"     # a spec/ that says agent, approved, is not enough for the guard
 python3 -I -c 'import json; s = json.load(open("spec/requirements.json")); s["deploy"]["by"] = "agent"; print(json.dumps(s))' > "$tmp/dep/spec/requirements.json"
 python3 -I "$tmp/dep/harness/spec.py" check >/dev/null || fail "spec.py rejects deploy.by agent"
