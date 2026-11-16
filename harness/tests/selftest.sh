@@ -72,7 +72,7 @@ work = lambda tid: [(g["model"], g["fallback"]) for g in cards[tid]["legs"] if g
 assert work("M1.T1") == [(O, False), (F, False)], f"M1.T1 work legs {work('M1.T1')}: want Opus, then Fable on the retry"
 assert work("M1.T2") == [(F, True)], f"M1.T2 work legs {work('M1.T2')}: want Fable after the Opus usage limit"
 assert work("M1.T3") == [(O, False)], f"M1.T3 work legs {work('M1.T3')}: a short 429 must retry on Opus"
-assert work("M2.T1") == [(O, False)], f"M2.T1 work legs {work('M2.T1')}: after a wait with both models limited, back to Opus"
+assert work("M2.T1") == [(O, False)], f"M2.T1 work legs {work('M2.T1')}: after a persistent 429, a limited fallback and a wait, back to Opus"
 ver = [(g["model"], g["fallback"]) for g in cards["M1.T3"]["legs"] if g["kind"] == "verify"]
 assert ver == [(F, True)], f"M1.T3 verify legs {ver}: want Fable after the Opus usage limit"
 assert all((g["model"], g["fallback"]) == (O, False) for c in cards.values() if c["id"] != "M1.T3" for g in c.get("legs", []) if g["kind"] == "verify")
@@ -82,8 +82,10 @@ PY
 grep -q "usage limit on claude-opus-5-5: running this work leg on claude-fable-5-2" "$tmp/run.log" || fail "the work leg did not fall back on a usage limit"
 grep -q "usage limit on claude-opus-5-5: running this verify leg on claude-fable-5-2" "$tmp/run.log" || fail "the verify leg did not fall back on a usage limit"
 [ "$(grep -c 'waiting 1s: usage limit' "$tmp/run.log")" = 2 ] || fail "want two usage-limit waits (the plan leg, M2.T1 with both models limited), none for a fallback or a 429"
+[ "$(grep -c 'waiting 1s: rate limit that outlasted the retries' "$tmp/run.log")" = 1 ] || fail "the M1 round-2 plan leg did not wait out a persistent 429"
+grep -q "rate limit that outlasted the retries on claude-opus-5-5: running this work leg on claude-fable-5-2" "$tmp/run.log" || fail "a persistent 429 on a work leg did not fall back"
 [ "$(grep '^PLANNER' "$MOCK_STATE/calls" | head -2 | sort -u)" = "PLANNER claude-fable-5-2 high -" ] || fail "the plan leg did not wait and retry on Fable"
-[ "$(grep '^WORKER .* M2.T1$' "$MOCK_STATE/calls" | cut -d' ' -f2 | tr '\n' ' ')" = "claude-opus-5-5 claude-fable-5-2 claude-opus-5-5 " ] || fail "M2.T1: want Opus, Fable (both limited), then Opus after the wait"
+[ "$(grep '^WORKER .* M2.T1$' "$MOCK_STATE/calls" | cut -d' ' -f2 | tr '\n' ' ')" = "claude-opus-5-5 claude-opus-5-5 claude-opus-5-5 claude-fable-5-2 claude-opus-5-5 " ] || fail "M2.T1: want Opus x3 (429), Fable (limited), then Opus after the wait"
 [ "$(grep '^WORKER .* M1.T3$' "$MOCK_STATE/calls" | cut -d' ' -f2 | tr '\n' ' ')" = "claude-opus-5-5 claude-opus-5-5 " ] || fail "M1.T3: a short 429 must be retried on the same model"
 grep -q "provider error, will retry (API Error: 429" "$tmp/run.log" || fail "the short 429 was not retried as a provider error"
 grep -q '^- usage: work claude-opus-5-5 effort high: in 1000, out 200, cache read 5000, cache write 300 tokens, ~\$0.12' PROGRESS.md || fail "PROGRESS.md has no usage line for a work leg"
@@ -114,7 +116,14 @@ assert with_env({"HARNESS_EFFORT": "low", "HARNESS_EFFORT_AUDIT": "max"}, loop.e
 assert with_env({}, loop.fallback_model, F) == O and with_env({}, loop.fallback_model, O) == F
 assert with_env({"HARNESS_FALLBACK_MODEL": "y"}, loop.fallback_model, O) == "y"
 assert with_env({"HARNESS_FALLBACK_MODEL": F}, loop.fallback_model, F) == O, "an escalated Fable leg must still fall back to Opus"
-assert loop.classify('API Error: 429 {"error":{"type":"rate_limit_error"}}') == "transient" and loop.classify("Rate limit reached") == "transient"
+# a third fallback model: the leg tries its own model and that one, then waits and starts again on its own
+calls, script = [], iter(["limit", "limit", None])
+loop.run_claude = lambda kind, prompt, model, effort: calls.append(model) or {"err": next(script), "text": "usage limit"}
+loop.git, loop.sh, loop.pause = (lambda *a, **k: ""), (lambda *a, **k: None), (lambda *a: calls.append("wait"))
+r = with_env({"HARNESS_FALLBACK_MODEL": "x"}, loop.session, "work", "brief", "HEAD")
+assert calls == [O, "x", "wait", O] and not r["fallback"], calls
+assert loop.classify('API Error: 429 {"error":{"type":"rate_limit_error"}}') == "rate" and loop.classify("Rate limit reached") == "rate"
+assert loop.classify("API Error: 529 overloaded") == "transient"
 assert loop.classify("Claude AI usage limit reached · resets 3am") == "limit" and loop.classify("5-hour limit reached ∙ resets 3am") == "limit"
 PY
 # a spec edited after approval must stop the next run before it starts

@@ -3,7 +3,9 @@
 that kind would do for a toy project (two tiny CLI programs), including some bad behaviour the loop
 must survive: one provider error, a short 429 rate limit on M1.T3's first work leg, a usage limit on
 the first plan leg, on the first Opus work leg of M1.T2 and on M1.T3's first Opus verify leg, a usage
-limit on both models for M2.T1's work (waited out, then back on Opus), an attempt to edit the ledger
+a 429 on M2.T1's Opus work leg that outlasts the short retries (so it falls back) and a usage limit on
+its Fable fallback (waited out, then back on Opus), a 429 on the M1 round-2 plan leg that outlasts the
+short retries (waited out), an attempt to edit the ledger
 and a check, a first M1.T1 that fails its check (so attempt 2 runs), a first version with a bug that only an acceptance check notices (so the milestone is planned
 again while R1 already passes), a bug that only the auditor notices, and VERDICT/GAP lines wrapped in
 markdown. Prints one JSON result line like Claude Code does, with usage (the auditor's has none), and
@@ -61,6 +63,8 @@ if kind == "DESIGN":
 if kind == "PLANNER":
     if count("planner") == 1:
         out(LIMIT, error=True)                                                    # a plan leg must wait this out
+    if "plan/M1.r2.jsonl" in prompt and count("rate-plan") <= 3:
+        out("Rate limit reached for claude-fable-5-2", error=True)                 # persists past the short retries: wait, never stop
     mid = re.search(r"milestone (M\d+)", prompt).group(1)
     plan_file = re.search(r"`(plan/M\d+\.r\d+\.jsonl)`", prompt).group(1)
     first = int(re.search(r'"id": "T(\d+)"', prompt).group(1))
@@ -89,7 +93,9 @@ if kind == "WORKER":
         out(LIMIT, error=True)                                                    # a work leg must switch model at once
     if tid == "M1.T3" and count("rate-work") == 1:                                # short rate limit: same model, short wait
         out('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"per-minute rate limit exceeded"}}', error=True)
-    if tid == "M2.T1" and count(f"both-{model}") == 1:                            # both models limited: wait, then own model
+    if tid == "M2.T1" and model == "claude-opus-5-5" and count("rate-m2-opus") <= 3:   # a 429 that persists: fallback
+        out('API Error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"rate limit exceeded"}}', error=True)
+    if tid == "M2.T1" and model == "claude-fable-5-2" and count("limit-m2-fable") == 1:  # fallback limited too: wait, then Opus
         out(LIMIT, error=True)
     if tid == "M1.T1":
         add = "int(sys.argv[1]) + int(sys.argv[2])" if attempt > 1 else "int(sys.argv[1]) * int(sys.argv[2])"   # attempt 1 fails its check

@@ -24,7 +24,7 @@ gets a short brief, does one job, and exits. This script checks the result itsel
 
 A failed task is retried with the failure text (MAX_ATTEMPTS), then `blocked`. Provider errors
 (5xx, timeouts, overload, a short 429 rate limit) are retried on the same model with a pause and never
-count against a task. A usage limit on a
+count against a task; a rate limit that outlasts those pauses counts as a usage limit. A usage limit on a
 work or verify leg (judged by scripts) runs that leg at once on the other model; any other usage limit
 is waited out. Every stop prints the reason and what is needed, and is written to .harness-run/last-stop.txt.
 Each leg's model, effort, tokens and cost estimate go into PROGRESS.md and the card's `legs` list.
@@ -89,9 +89,11 @@ DESIGN_PATHS = ["spec/DESIGN.md", "plan/milestones.json", "checks/check_project.
 PLAN_PATHS = ["plan", "checks/tasks", "checks/acceptance", "checks/check_project.sh"]
 WORK_FORBIDDEN = HARNESS + SPEC + STATE + ["spec/DESIGN.md", "plan", "checks"]
 
-TRANSIENT = re.compile(r"API Error:? ?(408|409|429|5\d\d)|rate.?limit|overloaded|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|"
+TRANSIENT = re.compile(r"API Error:? ?(408|409|5\d\d)|overloaded|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|"
                        r"fetch failed|under capacity|connection error|network error|internal server error|bad gateway", re.I)
-# a usage limit (plan quota, hours to reset) is not a short rate limit (429, retried like a provider error)
+# A short rate limit (429) is retried like a provider error; once those waits are used up it is handled
+# like a usage limit (plan quota, hours to reset): fallback model for work and verify, then the long wait.
+RATE = re.compile(r"API Error:? ?429|rate.?limit", re.I)
 LIMIT = re.compile(r"usage limit|(?<!rate )limit reached|out of (extra )?usage|quota|limit will reset", re.I)
 AUTH = re.compile(r"API Error:? ?40[13]|invalid api key|invalid x-api-key|authentication_error|please run /login|"
                   r"oauth token (has )?expired|not logged in", re.I)
@@ -313,6 +315,8 @@ def classify(text):
         return "auth"
     if LIMIT.search(text):
         return "limit"
+    if RATE.search(text):
+        return "rate"
     if TRANSIENT.search(text):
         return "transient"
     return "other"
@@ -321,11 +325,11 @@ def classify(text):
 def session(kind, prompt, start, attempt=1):
     """run_claude with patience: provider errors are retried from a clean tree. A usage limit on a work or
     verify leg runs it at once on the other model; when that is limited too (or for other kinds), the
-    limit is waited out, and each try after a wait starts again on the leg's own model.
-    Raises Stop for errors only John can fix."""
+    limit is waited out, and each try after a wait starts again on the leg's own model. A rate limit that
+    outlasts the short provider waits is handled like a usage limit. Raises Stop for errors only John can fix."""
     waits, limit_until = list(RETRY_WAITS), None
     own = model = model_for(kind, attempt)
-    effort, tried = effort_for(kind), set()
+    alt, effort = fallback_model(own), effort_for(kind)
     while True:
         r = run_claude(kind, prompt, model, effort)
         r["fallback"] = model != own
@@ -336,21 +340,20 @@ def session(kind, prompt, start, attempt=1):
         first = r["text"].strip().splitlines()[0][:200] if r["text"].strip() else "no output"
         if r["err"] == "auth":
             raise Stop(f"Claude sign-in failed ({first}). Run `claude` once in a terminal and sign in, then start the run again.")
-        if r["err"] == "limit":
-            tried.add(model)
-            alt = fallback_model(model)
-            if kind in FALLBACK_KINDS and alt not in tried:
-                say(f"  usage limit on {model}: running this {kind} leg on {alt} instead ({first})")
+        if r["err"] in ("transient", "rate") and waits:
+            pause(waits.pop(0), f"provider error, will retry ({first})")
+            continue
+        if r["err"] in ("limit", "rate"):
+            what = "usage limit" if r["err"] == "limit" else "rate limit that outlasted the retries"
+            if kind in FALLBACK_KINDS and model == own and alt != own:
+                say(f"  {what} on {model}: running this {kind} leg on {alt} instead ({first})")
                 model = alt
                 continue
             limit_until = limit_until or time.time() + LIMIT_HOURS * 3600
             if time.time() > limit_until:
-                raise Stop(f"the usage limit did not clear within {LIMIT_HOURS:g} h ({first}). Start the run again later; it resumes where it stopped.")
-            pause(LIMIT_POLL, f"usage limit ({first})")
-            model, tried = own, set()
-            continue
-        if r["err"] == "transient" and waits:
-            pause(waits.pop(0), f"provider error, will retry ({first})")
+                raise Stop(f"the {what} did not clear within {LIMIT_HOURS:g} h ({first}). Start the run again later; it resumes where it stopped.")
+            pause(LIMIT_POLL, f"{what} ({first})")
+            model = own
             continue
         raise Stop(f"the session kept failing: {first}. Nothing was lost; start the run again once this is fixed.")
 
