@@ -4,8 +4,9 @@ Status: answers from John recorded 2026-11-16. Personas wait for John's confirma
 
 ## Context (John, 2026-11-16)
 
-- Plan: Claude Max. Cost means usage quota and time spent waiting for the limit to reset. The run
-  used almost all Fable usage in a day. Dollar figures are estimates at public API prices.
+- Plan: Claude Max 20x; Fable has its own limit. Cost means usage quota and time spent waiting for
+  the limit to reset. John's words: "Time is mostly spent waiting for usage to reset, but it almost
+  used all the Fable usage in a day." Dollar figures are estimates at public API prices.
 - The VM is the DigitalOcean droplet `johns-ubuntu` (4 vCPU, 8 GB RAM), set up in
   `jcallahanp/linux-droplet-migration`. Claude Code there runs with permission checks bypassed and a
   guard hook (`setup/droplet/claude/guard.py`). The secrets manager is Bitwarden Secrets Manager
