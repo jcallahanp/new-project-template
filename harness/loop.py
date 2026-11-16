@@ -63,7 +63,7 @@ MAX_AUDITS = 3              # audits per run; each failed audit adds one fix mil
 FAIL_STREAK = 5             # legs in a row without progress before the loop gives up
 MAX_TASKS = 25              # per planning round
 MAX_MILESTONES = 12
-LEG_SECONDS = {"design": 2400, "plan": 1800, "work": 2700, "verify": 900, "audit": 2400}
+LEG_SECONDS = {"design": 2400, "plan": 2700, "work": 2700, "verify": 900, "audit": 2400}
 LEG_TURNS = {"design": "100", "plan": "100", "work": "200", "verify": "50", "audit": "100"}
 RETRY_WAITS = [int(x) for x in os.environ.get("HARNESS_RETRY_WAITS", "30,120,300,900").split(",")]   # pauses before retrying a provider error
 LIMIT_POLL = int(os.environ.get("HARNESS_LIMIT_POLL", "900"))                       # seconds between tries while a usage limit is active
@@ -515,6 +515,8 @@ def plan_leg(m, cards, branch):
         elif sh(["bash", "-n", script]).returncode != 0:
             problems.append(f"{rid}: its acceptance check has a syntax error")
         elif run_script(f"bash {script}", timeout=600)[0]:
+            if script in frozen:
+                continue   # proven failing in an earlier round; it passes because that work is done
             problems.append(f"{rid}: its acceptance check passes now, before the work, so it does not test what is missing")
         if rid not in covered:
             problems.append(f"{rid}: no task lists it under `requirements`")
@@ -571,7 +573,7 @@ def verify_leg(card, start, branch):
     sh(["git", "clean", "-qfd"])
     if not r["ok"]:
         return False, r["text"], r
-    verdicts = re.findall(r"^\s*VERDICT:\s*(PASS|FAIL)\b[ \t:—-]*(.*)$", r["text"], re.MULTILINE)
+    verdicts = re.findall(r"^[\s>*_`#-]*VERDICT:\s*(PASS|FAIL)\b[*_`]*[ \t:—–-]*(.*)$", r["text"], re.MULTILINE)
     if not verdicts:
         return False, "the verifier gave no VERDICT line (counts as FAIL)", r
     word, reason = verdicts[-1]
@@ -587,8 +589,8 @@ def audit_leg(branch):
     sh(["git", "clean", "-qfd"])
     if not r["ok"]:
         return None, [], r["text"], r
-    gaps = [(a, b.strip()) for a, b in re.findall(r"^\s*GAP:\s*([A-Za-z0-9_-]+)\s*[-—:]\s*(.+)$", r["text"], re.MULTILINE)]
-    verdicts = re.findall(r"^\s*VERDICT:\s*(PASS|FAIL)\b", r["text"], re.MULTILINE)
+    gaps = [(a, b.strip()) for a, b in re.findall(r"^[\s>*_`#-]*GAP:\s*([A-Za-z0-9_-]+)[*_`]*\s*[-—–:]\s*(.+)$", r["text"], re.MULTILINE)]
+    verdicts = re.findall(r"^[\s>*_`#-]*VERDICT:\s*(PASS|FAIL)\b", r["text"], re.MULTILINE)
     if not verdicts:
         return None, gaps, "the auditor gave no VERDICT line", r
     return verdicts[-1] == "PASS" and not gaps, gaps, r["text"].strip()[-1500:], r

@@ -42,6 +42,9 @@ grep -q "provider error, will retry" "$tmp/run.log" || fail "the provider error 
 grep -q '"FAKE"' ledger.jsonl && fail "a worker's edit to the ledger survived"
 grep -q '^exit 0' checks/tasks/M1.T2.sh && fail "a worker's edit to a task check survived"
 grep -q '^exit 0' checks/acceptance/R1.sh && fail "a planner's edit to a frozen acceptance check survived"
+grep -q "no VERDICT line" "$tmp/run.log" && fail "a VERDICT line wrapped in markdown was not parsed"
+[ -f plan/M1.r2.jsonl ] || fail "M1 was not planned again after its acceptance check failed"
+grep -q "  -> rejected" "$tmp/run.log" && fail "a plan was rejected (a frozen acceptance check that already passes is not a plan problem)"
 grep -q '"id": "M2"' ledger.jsonl || fail "the audit gap did not create a fix milestone"
 [ "$(python3 app/sub.py 2 5)" = "-3" ] || fail "the audit gap was not fixed"
 [ "$(git branch --show-current)" = "build/selftest-calc" ] || fail "the run did not work on a build branch"
@@ -50,4 +53,4 @@ bash checks/run_gates.sh >/dev/null || fail "gates fail after delivery"
 # a spec edited after approval must stop the next run before it starts
 sed -i 's/"anything beyond integers"/"anything beyond whole numbers"/' spec/requirements.json; git commit -q -am "edit spec"
 if python3 -I harness/loop.py run --no-push >/dev/null 2>&1; then fail "the loop started with a spec that changed after approval"; fi
-echo "SELFTEST PASS ($(grep -c '^[0-9:]* leg ' "$tmp/run.log") legs: design, plan, work, verify, audit gap, fix, audit, deliver)"
+echo "SELFTEST PASS ($(grep -c '^[0-9:]* leg ' "$tmp/run.log") legs: design, plan, work, verify, replan, audit gap, fix, audit, deliver)"

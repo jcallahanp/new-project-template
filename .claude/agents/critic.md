@@ -3,6 +3,7 @@ name: critic
 description: Read-only reviewer for a worker's own diff before it commits. Give it the task's acceptance criterion; it reports real defects only.
 tools: Read, Grep, Glob, Bash
 maxTurns: 20
+model: opus
 ---
 
 You review uncommitted and recent work against one acceptance criterion. You cannot edit files; use
