@@ -16,13 +16,17 @@ gets a short brief, does one job, and exits. This script checks the result itsel
              changes to those paths are thrown away after every leg.
   4. CHECK   this script runs the task's check and checks/run_gates.sh.
   5. VERIFY  a separate read-only session that did not do the work ends with VERDICT: PASS or FAIL.
+             Its brief carries the loop's check and gate output, so it does not run them again.
   6. CLOSE   when a milestone's tasks are done, this script runs its requirements' acceptance checks.
              Failures send the milestone back to PLAN for more tasks.
   7. AUDIT   when every milestone is closed: all acceptance checks and gates are re-run, then a
              read-only auditor compares the product with the spec as a user would. Gaps become a new
              milestone. PASS writes DELIVERY.md, pushes the branch and opens a pull request.
 
-A failed task is retried with the failure text (MAX_ATTEMPTS), then `blocked`. Provider errors
+A failed task is retried with the failure text (MAX_ATTEMPTS), then `blocked`. From attempt 2 on, a worker
+whose check fails may end with `CHECK-WRONG: <reason>`; a read-only JUDGE leg then decides. If it agrees,
+the task is blocked at once and John is notified (the run goes on with other tasks); if not, the judge's
+reason is the feedback for the next attempt. Provider errors
 (5xx, timeouts, overload, a short 429 rate limit) are retried on the same model with a pause and never
 count against a task; a rate limit that outlasts those pauses counts as a usage limit. A usage limit on a
 work or verify leg (judged by scripts) runs that leg at once on the other model; any other usage limit
@@ -32,8 +36,8 @@ Each leg's model, effort, tokens and cost estimate go into PROGRESS.md and the c
 Exit code: 0 = delivered, 3 = stopped early (reason printed), 2 = cannot start.
 
 Env: HARNESS_CLAUDE (default `claude`).
-  Model per leg kind (KIND = DESIGN, PLAN, WORK, VERIFY, AUDIT): HARNESS_MODEL_<KIND>, else HARNESS_MODEL,
-  else the default: claude-fable-5-2 for design, plan and audit; claude-opus-5-5 for work and verify.
+  Model per leg kind (KIND = DESIGN, PLAN, WORK, VERIFY, JUDGE, AUDIT): HARNESS_MODEL_<KIND>, else HARNESS_MODEL,
+  else the default: claude-fable-5-2 for design, plan, judge and audit; claude-opus-5-5 for work and verify.
   A work leg for a task that already failed (attempt 2+) uses HARNESS_ESCALATE_MODEL (default
   claude-fable-5-2) unless HARNESS_MODEL_WORK is set.
   Effort per kind: HARNESS_EFFORT_<KIND>, else HARNESS_EFFORT, else high; an empty value omits --effort.
@@ -62,7 +66,7 @@ H = ROOT / "harness"
 RUN = ROOT / ".harness-run"                      # git-ignored runtime files (log, lock, last stop)
 CLAUDE = os.environ.get("HARNESS_CLAUDE") or "claude"
 FABLE, OPUS = "claude-fable-5-2", "claude-opus-5-5"
-KIND_MODEL = {"design": FABLE, "plan": FABLE, "audit": FABLE, "work": OPUS, "verify": OPUS}
+KIND_MODEL = {"design": FABLE, "plan": FABLE, "audit": FABLE, "work": OPUS, "verify": OPUS, "judge": FABLE}
 FALLBACK_KINDS = ("work", "verify")              # legs a script judges: on a usage limit they switch model
 LIMIT_HOURS = float(os.environ.get("HARNESS_LIMIT_HOURS", "8"))
 LEDGER, PROGRESS = ROOT / "ledger.jsonl", ROOT / "PROGRESS.md"
@@ -75,8 +79,8 @@ MAX_AUDITS = 3              # audits per run; each failed audit adds one fix mil
 FAIL_STREAK = 5             # legs in a row without progress before the loop gives up
 MAX_TASKS = 25              # per planning round
 MAX_MILESTONES = 12
-LEG_SECONDS = {"design": 2400, "plan": 2700, "work": 2700, "verify": 900, "audit": 2400}
-LEG_TURNS = {"design": "100", "plan": "100", "work": "200", "verify": "50", "audit": "100"}
+LEG_SECONDS = {"design": 2400, "plan": 2700, "work": 2700, "verify": 900, "judge": 900, "audit": 2400}
+LEG_TURNS = {"design": "100", "plan": "100", "work": "200", "verify": "50", "judge": "50", "audit": "100"}
 RETRY_WAITS = [int(x) for x in os.environ.get("HARNESS_RETRY_WAITS", "30,120,300,900").split(",")]   # pauses before retrying a provider error
 LIMIT_POLL = int(os.environ.get("HARNESS_LIMIT_POLL", "900"))                       # seconds between tries while a usage limit is active
 
@@ -258,7 +262,7 @@ def run_claude(kind, prompt, model, effort):
            "--output-format", "json", "--max-turns", LEG_TURNS[kind], "--model", model]
     if effort:
         cmd += ["--effort", effort]
-    if kind in ("verify", "audit"):
+    if kind in ("verify", "judge", "audit"):
         cmd += ["--disallowed-tools", "Edit", "Write", "NotebookEdit"]
     t0 = time.time()
     # Own process group + a watchdog: the whole session tree is killed at the limit, even if it hangs.
@@ -626,9 +630,9 @@ def work_leg(card, branch):
         FEEDBACK=card.get("note") or "none (first attempt)"), start, attempt=card.get("attempts", 0) + 1)
     bad, kept = seal(start, branch, f"work({card['id']}): {card['title']}", forbidden=WORK_FORBIDDEN)
     if not r["ok"]:
-        return False, r["text"], r, start
+        return False, r["text"], r, start, None
     if not kept:
-        return False, "the session changed nothing it is allowed to change" + (f" (undone: {', '.join(bad[:5])})" if bad else "") + note_denials(r), r, start
+        return False, "the session changed nothing it is allowed to change" + (f" (undone: {', '.join(bad[:5])})" if bad else "") + note_denials(r), r, start, None
     ok, out = run_script(card["check"])
     gok, gout = run_gates()
     msg = ""
@@ -638,16 +642,18 @@ def work_leg(card, branch):
         msg += f"task check `{card['check']}` failed:\n{out}\n"
     if not gok:
         msg += f"gates failed:\n{gout}\n"
-    return ok and gok, (msg.strip() + note_denials(r)) or "check and gates pass", r, start
+    return ok and gok, (msg.strip() + note_denials(r)) or "check and gates pass", r, start, (ok, out, gok, gout)
 
 
-def verify_leg(card, start, branch):
+def verify_leg(card, start, branch, ran):
+    """`ran`: the loop's own (check ok, check output, gates ok, gates output) for this commit, given to the verifier."""
     head = git("rev-parse", "HEAD")
     reqs = {q["id"]: q for q in spec()["requirements"]}
     r = session("verify", brief(
         "verify", TASK_ID=card["id"], TITLE=card["title"], ACCEPTANCE=card["acceptance"], CHECK=card["check"],
         REQS="\n".join(f"- {rid}: {reqs[rid]['statement']}" for rid in card.get("requirements") or [] if rid in reqs) or "none directly",
-        BASE=start[:12], HEAD=head[:12], STAT=git("diff", "--stat", start, head)[-1500:]), head)
+        BASE=start[:12], HEAD=head[:12], STAT=git("diff", "--stat", start, head)[-1500:],
+        CHECK_OUTPUT=ran[1] or "(no output)", GATES_OUTPUT=ran[3] or "(no output)"), head)
     if git("branch", "--show-current") != branch:
         git("switch", "-q", "-f", branch)
     git("reset", "-q", "--hard", head)                       # a verifier leaves nothing behind
@@ -659,6 +665,32 @@ def verify_leg(card, start, branch):
         return False, "the verifier gave no VERDICT line (counts as FAIL)", r
     word, reason = verdicts[-1]
     return word == "PASS", reason.strip()[:600] or ("the verifier found no defect" if word == "PASS" else r["text"].strip()[-600:]), r
+
+
+def check_wrong_claim(text):
+    """The worker's last `CHECK-WRONG: <reason>` line, or None."""
+    claims = re.findall(r"^[\s>*_`#-]*CHECK-WRONG:[*_`]*\s*(.+?)\s*$", text, re.MULTILINE)
+    return claims[-1].strip("*_` ") if claims else None
+
+
+def judge_leg(card, claim, check_out, branch):
+    """A read-only session decides whether the task's check itself is wrong. Returns (agreed, reason, result);
+    no verdict, or a failed session, counts as CHECK-OK."""
+    head = git("rev-parse", "HEAD")
+    reqs = {q["id"]: q for q in spec()["requirements"]}
+    r = session("judge", brief(
+        "judge", TASK_ID=card["id"], TITLE=card["title"], ACCEPTANCE=card["acceptance"], CHECK=card["check"],
+        REQS="\n".join(f"- {rid}: {reqs[rid]['statement']}" for rid in card.get("requirements") or [] if rid in reqs) or "none directly",
+        ATTEMPT=card.get("attempts", 0) + 1, CHECK_OUTPUT=check_out or "(no output)", CLAIM=claim), head)
+    if git("branch", "--show-current") != branch:
+        git("switch", "-q", "-f", branch)
+    git("reset", "-q", "--hard", head)                       # a judge leaves nothing behind
+    sh(["git", "clean", "-qfd"])
+    verdicts = re.findall(r"^[\s>*_`#-]*VERDICT:\s*(CHECK-WRONG|CHECK-OK)\b[*_`]*[ \t:—–-]*(.*)$", r["text"], re.MULTILINE) if r["ok"] else []
+    if not verdicts:
+        return False, "the judge gave no verdict (counts as CHECK-OK)" + ("" if r["ok"] else f": {r['text'][:300]}"), r
+    word, reason = verdicts[-1]
+    return word == "CHECK-WRONG", reason.strip()[:600] or "no reason given", r
 
 
 def audit_leg(branch):
@@ -765,14 +797,19 @@ def cmd_status(_):
         print(usage_summary(cards))
 
 
+def notify(msg):
+    """Tell John now, with a desktop notification where one is available."""
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", f"Build loop: {ROOT.name}", msg[:200]], check=False, capture_output=True)
+
+
 def finish(why, legs, code):
     cards = load()
     text = f"{utc()} LOOP STOPPED: {why} · {legs} legs"
     RUN.mkdir(exist_ok=True)
     (RUN / "last-stop.txt").write_text(text + "\n")
     print(f"\n{text}\n{summary(cards)}", flush=True)
-    if shutil.which("notify-send"):
-        subprocess.run(["notify-send", f"Build loop: {ROOT.name}", why[:200]], check=False, capture_output=True)
+    notify(why)
     sys.exit(code)
 
 
@@ -874,13 +911,20 @@ def cmd_run(a):
                     tid = task["id"]
                     legs += 1
                     say(f"leg {legs}: WORK {tid} (attempt {task.get('attempts', 0) + 1}) — {task['title']}")
-                    ok, msg, r, start = work_leg(task, branch)
-                    stage, vr = "check", None
+                    ok, msg, r, start, ran = work_leg(task, branch)
+                    stage, vr, jr, agreed = "check", None, None, False
+                    claim = check_wrong_claim(r["text"]) if ran and not ran[0] and task.get("attempts", 0) + 1 >= 2 else None
                     if ok:
                         legs += 1
                         say(f"leg {legs}: VERIFY {tid}")
                         stage = "verify"
-                        ok, msg, vr = verify_leg(task, start, branch)
+                        ok, msg, vr = verify_leg(task, start, branch, ran)
+                    elif claim:                              # the worker says the check itself is wrong: a judge decides
+                        legs += 1
+                        say(f"leg {legs}: JUDGE {tid} — worker says: {claim[:160]}")
+                        agreed, why, jr = judge_leg(task, claim, ran[1], branch)
+                        msg = (f"check wrong (judge agreed): {why}\nworker's claim: {claim[:400]}\n" if agreed
+                               else f"the worker said the check is wrong; the judge disagreed: {why}\n") + msg
                     head = git("rev-parse", "--short", "HEAD")
                     if ok:
                         streak = 0
@@ -888,12 +932,17 @@ def cmd_run(a):
                     else:
                         streak += 1
                         task["attempts"] = task.get("attempts", 0) + 1
-                        task["note"] = f"attempt {task['attempts']} failed at {stage}: {msg[:1800]}"
-                        task["state"] = "blocked" if task["attempts"] >= MAX_ATTEMPTS else "todo"
-                    record(cards, tid, f"work leg ({r['turns']} turns, {r['secs']}s)" + (f" + verify leg ({vr['turns']} turns, {vr['secs']}s)" if vr else "") + f": {msg.splitlines()[0][:200]}",
-                           f"{task['check']} + checks/run_gates.sh + independent verify -> " + ("pass" if ok else f"fail at {stage}"),
-                           "next eligible task" if ok else ("blocked after 3 attempts" if task["state"] == "blocked" else "retry with this failure as feedback"),
-                           f"chore({tid}): " + ("done" if ok else task["state"]), [r, vr])
+                        task["note"] = msg[:2000] if agreed else f"attempt {task['attempts']} failed at {stage}: {msg[:1800]}"
+                        task["state"] = "blocked" if agreed or task["attempts"] >= MAX_ATTEMPTS else "todo"
+                    record(cards, tid, f"work leg ({r['turns']} turns, {r['secs']}s)" + (f" + verify leg ({vr['turns']} turns, {vr['secs']}s)" if vr else "")
+                           + (f" + judge leg ({jr['turns']} turns, {jr['secs']}s)" if jr else "") + f": {msg.splitlines()[0][:200]}",
+                           f"{task['check']} + checks/run_gates.sh + independent verify -> " + ("pass" if ok else f"fail at {stage}")
+                           + ("" if not jr else " (judge: check wrong)" if agreed else " (judge: check ok)"),
+                           "next eligible task" if ok else ("blocked: the check needs John" if agreed else "blocked after 3 attempts"
+                                                            if task["state"] == "blocked" else "retry with this failure as feedback"),
+                           f"chore({tid}): " + ("done" if ok else task["state"]), [r, vr, jr])
+                    if agreed:
+                        notify(f"{tid} blocked, its check needs John: {msg.splitlines()[0][:150]}")
                     say(f"  -> {'DONE' if ok else task['state'].upper()}: {' '.join(msg.split())[:220]}")
                     continue
                 if any(k["state"] == "blocked" for k in ks):

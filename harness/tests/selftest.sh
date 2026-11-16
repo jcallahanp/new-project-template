@@ -5,7 +5,8 @@
 set -euo pipefail
 src="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-repo="$tmp/repo"; mkdir -p "$repo/spec" "$repo/plan" "$repo/notes" "$repo/checks/tasks" "$repo/checks/acceptance"
+make_repo() {   # $1: a new directory; ends inside it with the template committed on main, the spec approved
+repo="$1"; mkdir -p "$repo/spec" "$repo/plan" "$repo/notes" "$repo/checks/tasks" "$repo/checks/acceptance"
 cp -r "$src/harness" "$src/.claude" "$src/CLAUDE.md" "$src/.gitignore" "$repo/"
 cp "$src"/checks/run_gates.sh "$src"/checks/check_scope.sh "$src"/checks/check_progress.sh "$src"/checks/check_protected.sh "$repo/checks/"
 git -C "$src" show HEAD:checks/check_project.sh > "$repo/checks/check_project.sh" 2>/dev/null || cp "$src/checks/check_project.sh" "$repo/checks/check_project.sh"
@@ -30,10 +31,12 @@ JSON
 git init -q -b main; git config user.name selftest; git config user.email selftest@example.invalid
 git add -A; git commit -q -m "template"
 python3 -I harness/spec.py approve >/dev/null
-git init -q --bare "$tmp/origin.git"; git remote add origin "$tmp/origin.git"; git push -q -u origin main
+git init -q --bare "$repo.origin.git"; git remote add origin "$repo.origin.git"; git push -q -u origin main
+}
+make_repo "$tmp/repo"
 
 unset HARNESS_MODEL HARNESS_EFFORT HARNESS_ESCALATE_MODEL HARNESS_FALLBACK_MODEL
-for k in DESIGN PLAN WORK VERIFY AUDIT; do unset "HARNESS_MODEL_$k" "HARNESS_EFFORT_$k"; done
+for k in DESIGN PLAN WORK VERIFY JUDGE AUDIT; do unset "HARNESS_MODEL_$k" "HARNESS_EFFORT_$k"; done
 export MOCK_STATE="$tmp/mock" HARNESS_CLAUDE="$src/harness/tests/mock_claude" HARNESS_RETRY_WAITS=0,0 HARNESS_LIMIT_POLL=1 \
        HARNESS_EFFORT_VERIFY=medium HARNESS_FALLBACK_MODEL=claude-opus-5-5   # = the Opus legs' own model: they must fall back to Fable
 set +e; python3 -I harness/loop.py run --no-push > "$tmp/run.log" 2>&1; rc=$?; set -e
@@ -130,4 +133,32 @@ PY
 # a spec edited after approval must stop the next run before it starts
 sed -i 's/"anything beyond integers"/"anything beyond whole numbers"/' spec/requirements.json; git commit -q -am "edit spec"
 if python3 -I harness/loop.py run --no-push >/dev/null 2>&1; then fail "the loop started with a spec that changed after approval"; fi
-echo "SELFTEST PASS ($(grep -c '^[0-9:]* leg ' "$tmp/run.log") legs: design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback, replan, audit gap, fix, audit, deliver; usage recorded)"
+
+# "check is wrong" path (MOCK_SCENARIO=judge, see mock_claude): a fresh repo, a fake notify-send that logs to the mock's calls
+make_repo "$tmp/repo2"
+mkdir -p "$tmp/bin"; printf '#!/bin/sh\necho "NOTIFY $*" >> "$MOCK_STATE/calls"\n' > "$tmp/bin/notify-send"; chmod +x "$tmp/bin/notify-send"
+set +e; MOCK_SCENARIO=judge MOCK_STATE="$tmp/mock2" PATH="$tmp/bin:$PATH" python3 -I harness/loop.py run --no-push > "$tmp/run.log" 2>&1; rc=$?; set -e
+calls="$tmp/mock2/calls"
+[ "$rc" = 3 ] || fail "judge run: loop exited $rc, expected 3 (M1 blocked by M1.T1)"
+python3 -I - > "$tmp/judge.txt" 2>&1 <<'PY2' || fail "judge run ledger: $(cat "$tmp/judge.txt")"
+import json
+cards = {c["id"]: c for c in map(json.loads, open("ledger.jsonl"))}
+t1, t2, t3 = cards["M1.T1"], cards["M1.T2"], cards["M1.T3"]
+assert (t1["state"], t1["attempts"]) == ("blocked", 2), f"M1.T1 {t1['state']} after {t1['attempts']} attempts: want blocked at once on attempt 2"
+assert t1["note"].startswith("check wrong (judge agreed): JUDGE-T1-REASON"), t1["note"]
+assert (t2["state"], t3["state"], t3["attempts"]) == ("done", "done", 2), f"other tasks did not run on: {t2['state']}, {t3['state']} ({t3['attempts']})"
+assert [g["kind"] for g in t3["legs"]] == ["work", "work", "judge", "work", "verify"], [g["kind"] for g in t3["legs"]]
+assert [g["kind"] for g in t1["legs"]] == ["work", "work", "judge"], [g["kind"] for g in t1["legs"]]
+j = [g for g in t1["legs"] + t3["legs"] if g["kind"] == "judge"]
+assert all((g["model"], g["effort"], g["output"]) == ("claude-fable-5-2", "high", 200) for g in j), j
+PY2
+[ "$(grep '^JUDGE' "$calls" | cut -d' ' -f2,4 | tr '\n' ' ')" = "claude-fable-5-2 M1.T1 claude-fable-5-2 M1.T3 " ] \
+  || fail "want one judge leg for M1.T1 and one for M1.T3, both on attempt 2 (a claim on attempt 1 is ignored): $(grep '^JUDGE' "$calls")"
+first_notify=$(grep -n '^NOTIFY' "$calls" | head -1 | cut -d: -f1); t2_work=$(grep -n '^WORKER .* M1.T2$' "$calls" | head -1 | cut -d: -f1)
+[ -n "$first_notify" ] && [ "$first_notify" -lt "$t2_work" ] || fail "John was not notified at once when the judge agreed: $(cat "$calls")"
+grep '^NOTIFY' "$calls" | head -1 | grep -q 'M1.T1 blocked, its check needs John: check wrong (judge agreed)' || fail "notification text: $(grep '^NOTIFY' "$calls")"
+grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-3.txt" || fail "the judge's reason for CHECK-OK is not in the next attempt's brief"
+grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-2.txt" && fail "mock: the judge's reason appeared before the judge ran"
+grep -q 'MARKER-T2-CHECK-OUTPUT sub ran' "$tmp/mock2/VERIFIER-M1.T2-1.txt" || fail "the verify brief does not carry the loop's check output"
+grep -q '  PASS' "$tmp/mock2/VERIFIER-M1.T2-1.txt" || fail "the verify brief does not carry the loop's gate output"
+echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1)"

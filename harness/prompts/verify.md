@@ -9,14 +9,23 @@ ACCEPTANCE CRITERION:
 REQUIREMENTS IT SERVES:
 {{REQS}}
 
-The automated check `{{CHECK}}` already passes. That is necessary, not sufficient: decide whether the
-work genuinely satisfies the criterion or merely satisfies the script.
+The loop ran the check `{{CHECK}}` and `bash checks/run_gates.sh` on this commit just now, and both
+passed. Do not run them again: the loop's run is the authority. Their output (tail):
+
+CHECK OUTPUT:
+{{CHECK_OUTPUT}}
+
+GATES OUTPUT:
+{{GATES_OUTPUT}}
+
+Passing is necessary, not sufficient: decide whether the work genuinely satisfies the criterion or
+merely satisfies the script.
 
 WHAT CHANGED ({{BASE}}..{{HEAD}}):
 {{STAT}}
 
-Inspect it yourself: `git diff {{BASE}} {{HEAD}}`, read the changed files, run the code and the check.
-Use the product the way a user would where you can (start it, call it, look at the output).
+Inspect it yourself: `git diff {{BASE}} {{HEAD}}` and read the changed files. Use the product the way a
+user would where the criterion needs it (start it, call it, look at the output).
 Fail the work if any of these is true:
 - the criterion is not actually met, or only met for the exact case the check tests;
 - the output is hard-coded, stubbed, mocked or special-cased to make the check pass;

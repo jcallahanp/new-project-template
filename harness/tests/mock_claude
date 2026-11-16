@@ -9,11 +9,19 @@ short retries (waited out) and is followed by one 529 (a short retry again), an 
 and a check, a first M1.T1 that fails its check (so attempt 2 runs), a first version with a bug that only an acceptance check notices (so the milestone is planned
 again while R1 already passes), a bug that only the auditor notices, and VERDICT/GAP lines wrapped in
 markdown. Prints one JSON result line like Claude Code does, with usage (the auditor's has none), and
-logs "<KIND> <model> <effort> <task>" per call to $MOCK_STATE/calls."""
+logs "<KIND> <model> <effort> <task>" per call to $MOCK_STATE/calls; worker and verifier briefs are kept as
+$MOCK_STATE/<kind>-<task>-<n>.txt.
+
+MOCK_SCENARIO=judge is a second, smaller run for the "check is wrong" path. M1.T1's check is impossible
+(2 + 3 must print 6): its worker claims CHECK-WRONG on attempts 1 and 2 and the judge agrees. M1.T2 is
+independent and passes; its check prints a line the verifier must see in its brief. M1.T3's worker fails
+attempts 1 and 2 with its own bug and claims CHECK-WRONG on both; the judge disagrees, and attempt 3 is
+right. No provider errors or limits in this scenario."""
 import json, os, re, subprocess, sys
 from pathlib import Path
 
 state = Path(os.environ["MOCK_STATE"]); state.mkdir(parents=True, exist_ok=True)
+scenario = os.environ.get("MOCK_SCENARIO", "")
 prompt = sys.stdin.read()
 argv = sys.argv[1:]
 model = argv[argv.index("--model") + 1] if "--model" in argv else "?"
@@ -54,6 +62,37 @@ kind = re.match(r"You are (?:the |a )(\w+) session", prompt).group(1)
 tid = (re.search(r"TASK (M\d+\.T\d+)", prompt) or [None, "-"])[1]
 with open(state / "calls", "a") as f:
     f.write(f"{kind} {model} {effort} {tid}\n")
+if kind in ("WORKER", "VERIFIER"):
+    (state / f"{kind}-{tid}-{count(f'brief-{kind}-{tid}')}.txt").write_text(prompt)
+if scenario == "judge" and kind == "PLANNER":
+    tasks = [{"id": "T1", "title": "Write app/add.py", "acceptance": "python3 app/add.py 2 3 prints 5 on one line", "requirements": ["R1"], "files": ["app/add.py"], "depends_on": []},
+             {"id": "T2", "title": "Write app/sub.py", "acceptance": "python3 app/sub.py 5 3 prints 2 on one line", "requirements": ["R2"], "files": ["app/sub.py"], "depends_on": []},
+             {"id": "T3", "title": "Keep the sign in app/sub.py", "acceptance": "python3 app/sub.py 2 5 prints -3 on one line", "requirements": ["R2"], "files": ["app/sub.py"], "depends_on": ["T2"]}]
+    write("checks/tasks/M1.T1.sh", '[ "$(python3 app/add.py 2 3)" = 6 ]\n')                  # wrong: 2 + 3 is 5
+    write("checks/tasks/M1.T2.sh", 'echo "MARKER-T2-CHECK-OUTPUT sub ran"; [ "$(python3 app/sub.py 5 3)" = 2 ]\n')
+    write("checks/tasks/M1.T3.sh", '[ "$(python3 app/sub.py 2 5)" = -3 ]\n')
+    write("checks/acceptance/R1.sh", '[ "$(python3 app/add.py 2 3)" = 5 ]\n')
+    write("checks/acceptance/R2.sh", '[ "$(python3 app/sub.py 2 5)" = -3 ]\n')
+    write("plan/M1.r1.jsonl", "".join(json.dumps(t) + "\n" for t in tasks))
+    out("3 tasks")
+if scenario == "judge" and kind == "WORKER":
+    attempt = int(re.search(r"ATTEMPT: (\d+)", prompt).group(1))
+    write(f"notes/{tid}/attempt-{attempt}.md", f"attempt {attempt}\n")                # so a repeated attempt still changes something
+    if tid == "M1.T1":
+        write("app/add.py", "import sys\nprint(int(sys.argv[1]) + int(sys.argv[2]))\n")
+        commit(f"{tid}: work")
+        out(f"add.py prints 5 for 2 3.\n\n**CHECK-WRONG:** the check wants 6 for 2 + 3; R1 says the sum, which is 5 (attempt {attempt})")
+    if tid == "M1.T3" and attempt < 3:
+        write("app/sub.py", "import sys\nprint(abs(int(sys.argv[1]) - int(sys.argv[2])))\n")
+        commit(f"{tid}: work")
+        out("CHECK-WRONG: a difference cannot be negative")
+    write("app/sub.py", "import sys\nprint(int(sys.argv[1]) - int(sys.argv[2]))\n")
+    commit(f"{tid}: work")
+    out("done")
+if kind == "JUDGE":
+    if tid == "M1.T1":
+        out("Read checks/tasks/M1.T1.sh and R1.\n\n> **VERDICT: CHECK-WRONG** — JUDGE-T1-REASON the check expects 6 for 2 + 3; R1 asks for the sum (5)")
+    out("R2 says first minus second.\n\nVERDICT: CHECK-OK - JUDGE-T3-REASON 2 - 5 is -3; remove the abs() in app/sub.py")
 if kind == "DESIGN":
     write("spec/DESIGN.md", "# Design\n\n" + "Two small Python command-line programs under app/. " * 20 + "\n\n## Running and testing\n\npython3 app/add.py 2 3\n")
     write("plan/milestones.json", json.dumps([{"id": "M1", "title": "Both calculators", "goal": "app/add.py and app/sub.py print the right result for integers.", "requirements": ["R1", "R2"]}]))
@@ -115,7 +154,7 @@ if kind == "WORKER":
     commit(f"{tid}: work")
     out("done")
 if kind == "VERIFIER":
-    if tid == "M1.T3" and model == "claude-opus-5-5" and count("limit-verify") == 1:
+    if tid == "M1.T3" and model == "claude-opus-5-5" and scenario != "judge" and count("limit-verify") == 1:
         out(LIMIT, error=True)                                                    # a verify leg must switch model at once
     out("Looked at the diff and ran the check.\n\n> **VERDICT: PASS** — the change meets the criterion")   # markdown around the verdict
 if kind == "AUDITOR":                       # no usage fields: the loop must record zeros and no cost

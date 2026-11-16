@@ -31,7 +31,9 @@ from `harness/prompts/`. The script, not the model, checks and records every res
 3. **WORK**: one task, one session. Afterwards the script throws away any edit to the spec, the plan,
    the checks, the ledger or the harness.
 4. **CHECK**: the script runs the task's check and `checks/run_gates.sh`.
-5. **VERIFY**: a read-only session that did not do the work ends with `VERDICT: PASS` or `FAIL`.
+5. **VERIFY**: a read-only session that did not do the work ends with `VERDICT: PASS` or `FAIL`. Its
+   brief carries the loop's check and gate output, so it reads the diff and uses the product instead
+   of running them again.
 6. **CLOSE**: when a milestone's tasks are done, its requirements' acceptance checks must pass;
    otherwise the milestone is planned again (up to three rounds).
 7. **AUDIT**: every acceptance check and gate is re-run, then a read-only auditor uses the product as
@@ -39,7 +41,11 @@ from `harness/prompts/`. The script, not the model, checks and records every res
    check that demonstrates the gap. Up to three audits.
 8. **DELIVER**: `DELIVERY.md`, push, pull request. You merge; you deploy.
 
-A failed task is retried twice with the failure text, then marked `blocked`. A blocked milestone stops
+A failed task is retried twice with the failure text, then marked `blocked`. From the second attempt,
+a worker may end with `CHECK-WRONG: <reason>` when it is sure the check itself is wrong; a read-only
+judge session decides. If it agrees, the task is blocked at once with a note starting `check wrong
+(judge agreed):`, you get a desktop notification, and the run goes on with other tasks; if not, the
+judge's reason is the feedback for the next attempt. A blocked milestone stops
 the run, because later milestones build on it.
 
 ## Files

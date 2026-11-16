@@ -42,7 +42,9 @@ scripts, and will record it. The rules that matter most:
 3. **Never touch the spec, the plan, the checks or the record** unless your brief names the file:
    `spec/`, `plan/`, `checks/`, `ledger.jsonl`, `PROGRESS.md`, `DELIVERY.md`, `CLAUDE.md`, `harness/`,
    `.claude/`, `.github/`. Such edits are thrown away after your session. If a check looks wrong, say
-   so in your final message and stop.
+   so in your final message and stop. From attempt 2 on, if you are sure the check itself is wrong or
+   impossible (not your code), end your final message with one line `CHECK-WRONG: <reason with
+   evidence>`; a read-only judge decides whether the task goes to John. You still never edit the check.
 4. **Stop when blocked.** A missing secret, an unclear criterion, a denied tool, a service that is
    down: say exactly what is missing as your final message. A clear "blocked because X" is a good
    outcome; a guess, a stub or a fake is not.
