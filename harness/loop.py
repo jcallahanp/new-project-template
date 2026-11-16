@@ -896,6 +896,11 @@ def cmd_run(a):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         sys.exit("cannot start: another loop is already running in this repo")
+
+    def interrupted(signum, _frame):               # a closed tmux window (SIGHUP) or `kill` (SIGTERM) stops the run like
+        raise KeyboardInterrupt                    # Ctrl+C: the running session's process group is killed, the stop recorded
+    for sig in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(sig, interrupted)
     if git("status", "--porcelain"):
         sys.exit("cannot start: the working tree has uncommitted changes; commit or stash them first")
     branch = git("branch", "--show-current")

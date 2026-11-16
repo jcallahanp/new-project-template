@@ -371,21 +371,24 @@ grep -q 'Next: put secret values in .env' "$tmp/appr.txt" || fail "approve witho
 grep -q '^SC_API_KEY=$' .env.example && grep -q '^# AGENT_KEY=$' .env.example && ! grep -q '^AGENT_KEY=' .env.example \
   || fail ".env.example asks John for a key the run creates: $(cat .env.example)"
 
-# Ctrl+C: the running session (own process group) dies with the loop and commits nothing afterwards
-make_repo "$tmp/repo4"
-MOCK_SCENARIO=hang MOCK_STATE="$tmp/mock5" python3 -I -c 'import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+# Ctrl+C, a closed tmux window (SIGHUP) and `kill` (SIGTERM): the running session (own process group)
+# dies with the loop and commits nothing afterwards
+for sig in INT HUP TERM; do
+make_repo "$tmp/repo4-$sig"
+MOCK_SCENARIO=hang MOCK_STATE="$tmp/mock5-$sig" python3 -I -c 'import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
   python3 -I harness/loop.py run --no-push > "$tmp/int.txt" 2>&1 &   # SIG_DFL: a background job of a script starts with SIGINT ignored
 lp=$!
-for _ in $(seq 100); do [ -s "$tmp/mock5/hang.pid" ] && break; sleep 0.1; done
-[ -s "$tmp/mock5/hang.pid" ] || fail "the hanging mock session did not start: $(cat "$tmp/int.txt")"
-kill -INT "$lp"; set +e; wait "$lp"; set -e
-heads=$(git log --all --oneline | wc -l); mp=$(cat "$tmp/mock5/hang.pid")
+for _ in $(seq 100); do [ -s "$tmp/mock5-$sig/hang.pid" ] && break; sleep 0.1; done
+[ -s "$tmp/mock5-$sig/hang.pid" ] || fail "the hanging mock session did not start: $(cat "$tmp/int.txt")"
+kill -"$sig" "$lp"; set +e; wait "$lp"; set -e
+heads=$(git log --all --oneline | wc -l); mp=$(cat "$tmp/mock5-$sig/hang.pid")
 alive() { [ -r "/proc/$1/stat" ] && ! grep -q '^[0-9]* (.*) Z' "/proc/$1/stat"; }   # a zombie counts as gone
 for _ in $(seq 20); do alive "$mp" || break; sleep 0.1; done
-alive "$mp" && fail "the session is still running after Ctrl+C on the loop"
+alive "$mp" && fail "the session is still running after SIG$sig on the loop"
 sleep 4    # past the mock's 3 s sleep: a surviving session would have committed by now
 [ "$(git log --all --oneline | wc -l)" = "$heads" ] && ! git log --all --oneline | grep -q 'late commit' \
-  || fail "a commit appeared after the loop stopped: $(git log --all --oneline | head -3)"
-grep -q 'interrupted' "$tmp/int.txt" || fail "the loop did not stop as interrupted: $(cat "$tmp/int.txt")"
+  || fail "a commit appeared after the loop stopped (SIG$sig): $(git log --all --oneline | head -3)"
+grep -q 'interrupted' "$tmp/int.txt" || fail "the loop did not stop as interrupted (SIG$sig): $(cat "$tmp/int.txt")"
+done
 
-echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback; vault-project required; work-model probe; Ctrl+C kills the session)"
+echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback; vault-project required; work-model probe; Ctrl+C, SIGHUP and SIGTERM kill the session)"
