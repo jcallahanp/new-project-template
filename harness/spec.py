@@ -25,6 +25,46 @@ STORY = re.compile(r"^As an? .+, I want .+ so that .+", re.S | re.I)
 VAGUE = ["fast", "quick", "quickly", "easy", "easily", "simple", "user-friendly", "intuitive", "robust", "seamless", "seamlessly",
          "appropriate", "appropriately", "properly", "as needed", "etc", "and so on", "nice", "modern", "scalable", "efficient",
          "efficiently", "flexible", "reasonable", "good", "clean", "smooth", "minimal", "some", "various", "should"]
+# A number with a measurable unit. Each one in a statement or an example's `then` needs a `limits` entry that says
+# whether it is a hard limit or a target, the margin, and how it is measured (a rough estimate must not fail at +1 %).
+UNIT = re.compile(r"(?<![\w.])(\d[\d,]*(?:\.\d+)?)\s?(seconds?|sec|minutes?|min|hours?|ms|s|req/s|rps|[KMG]i?B|B|%)(?![A-Za-z/])", re.I)
+UNIT_ALIAS = {"second": "s", "seconds": "s", "sec": "s", "minute": "min", "minutes": "min", "hour": "h", "hours": "h", "rps": "req/s"}
+
+
+def unit_key(u):
+    u = str(u).strip().lower()
+    return UNIT_ALIAS.get(u, u)
+
+
+def num(x):
+    return float(str(x).replace(",", ""))
+
+
+def limit_problems(rid, r, text):
+    out, lims = [], r.get("limits", [])
+    if not isinstance(lims, list) or any(not isinstance(x, dict) for x in lims):
+        return [f"{rid}: `limits` must be a list of objects"]
+    for x in lims:
+        name = x.get("name") or "?"
+        v, m = x.get("value"), x.get("margin")
+        if not str(x.get("name", "")).strip() or isinstance(v, bool) or not isinstance(v, (int, float)) or not str(x.get("unit", "")).strip():
+            out.append(f"{rid}: limit {name}: needs a `name`, a numeric `value` and a `unit`")
+        if x.get("kind") not in ("hard", "target"):
+            out.append(f"{rid}: limit {name}: `kind` must be `hard` (fails at the value) or `target` (passes within the margin)")
+        ok_margin = (isinstance(m, (int, float)) and not isinstance(m, bool) and m >= 0) or bool(re.fullmatch(r"\d+(\.\d+)?%", str(m)))
+        zero = ok_margin and float(str(m).rstrip("%")) == 0
+        if x.get("kind") == "target" and (not ok_margin or zero):
+            out.append(f"{rid}: limit {name}: a target needs a `margin` above 0, like \"10%\" or a number in {x.get('unit', 'its unit')}")
+        if x.get("kind") == "hard" and m is not None and not zero:
+            out.append(f"{rid}: limit {name}: a hard limit fails at its value; give it margin 0 or make it a target")
+        if len(str(x.get("measure", "")).split()) < 4:
+            out.append(f"{rid}: limit {name}: `measure` must say how it is measured (what, how often, how many runs)")
+    have = {(num(x["value"]), unit_key(x.get("unit"))) for x in lims if isinstance(x.get("value"), (int, float)) and not isinstance(x.get("value"), bool)}
+    for value, unit in UNIT.findall(text):
+        if (num(value), unit_key(unit)) not in have:
+            out.append(f"{rid}: \"{value} {unit}\" needs a `limits` entry with value {value} and unit {unit}: hard limit or target, "
+                       "the margin, and how it is measured (ask John)")
+    return out
 
 
 def load():
@@ -84,6 +124,7 @@ def problems(s):
             ex = []
         if len(str(r.get("verify", ""))) < 20:
             out.append(f"{rid}: `verify` must say how a script can prove it (what it runs, what it observes)")
+        out += limit_problems(rid, r, " ".join([st] + [str(e.get("then", "")) for e in ex]))
         text = " ".join([st] + [str(e.get("then", "")) for e in ex]).lower()
         hits = [w for w in VAGUE if re.search(rf"(?<![a-z-]){re.escape(w)}(?![a-z-])", text)]
         if hits:
@@ -99,6 +140,10 @@ def render(s):
     for r in s["requirements"]:
         L += [f"### {r['id']} ({r['priority']})", "", f"**Story:** {r['story']}", "", f"**Requirement:** {r['statement']}", "", "**Examples:**", ""]
         L += [f"- Given {e['given']}, when {e['when']}, then {e['then']}" for e in r["examples"]]
+        if r.get("limits"):
+            L += ["", "**Limits:**", ""] + [f"- {x['name']}: {x['value']} {x['unit']}, {x['kind']}"
+                                           + (f" (passes up to {x['value']} {x['unit']} + {x['margin']})" if x["kind"] == "target" else " (fails at the value)")
+                                           + f"; measured: {x['measure']}" for x in r["limits"]]
         L += ["", f"**How it is proven:** {r['verify']}", ""]
     for title, key in (("Will not do", "non_goals"), ("Constraints", "constraints"), ("Assumptions", "assumptions"),
                        ("Only John does these", "human_gates")):

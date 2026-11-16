@@ -32,6 +32,10 @@ Rules of the conversation:
 - **Ask for examples, not adjectives.** "Fast", "simple", "secure", "nice" cannot be built or checked.
   Ask: "Give me one real case: what goes in, what should come out?" and "What would make you say it
   is too slow?" Turn each answer into a given / when / then example with real values.
+- **Ask how hard every number is.** For each number with a unit (600 MB, 2 seconds, 50 req/s), ask,
+  one at a time: "Is this a hard limit or a target?", "How noisy is the measurement, and what margin is
+  fine?", "What happens at 10 % over?". A rough estimate ("roughly 600") is a `target`. Only a number
+  that must never be crossed (a contract, a hardware cap) is `hard`. Record the answers in `limits`.
 - **Offer a default when he does not care.** If a decision does not matter to him, propose the
   ordinary choice in one line, say why, and record it under `assumptions` once he agrees. Use the
   AskUserQuestion tool when there are two to four clear options; otherwise ask openly.
@@ -91,7 +95,11 @@ Write `spec/requirements.json` (update it as you go, so nothing depends on this 
       "examples": [
         {"given": "a concrete starting state", "when": "a concrete action with real values", "then": "the exact observable result"}
       ],
-      "verify": "How a script can prove it: what it starts, what it sends or clicks, what it must observe."
+      "verify": "How a script can prove it: what it starts, what it sends or clicks, what it must observe.",
+      "limits": [
+        {"name": "memory", "value": 600, "unit": "MB", "kind": "target", "margin": "10%",
+         "measure": "peak resident memory of both servers during a 10-minute soak, median of 3 runs"}
+      ]
     }
   ],
   "non_goals": ["what it will not do"],
@@ -114,6 +122,11 @@ How to write a requirement:
 - **Behaviour, not design.** No libraries, file layouts or vendors unless John required them; then
   they are constraints.
 - **Numbers instead of adjectives.** "within 2 seconds for 1,000 rows", not "fast".
+- **Every number with a unit gets a `limits` entry** (`spec.py check` insists): its `value` and
+  `unit` as written in the statement or example, `kind` `hard` or `target`, a `margin` (a target needs
+  one, like "10%" or a number in the same unit; a hard limit has margin 0), and `measure`: what is
+  measured, how often, how many runs. Ask John the three questions from step 2 for each one. A target
+  passes up to value plus margin; a hard limit fails at the value. Leave `limits` out when there are none.
 - **Every unhappy path he cares about is its own "If … then" requirement**, with an example.
 - **Examples use real values** and include at least one edge case per requirement where one exists.
 - **`verify` must be doable by a script on this machine** with the secrets listed. If a requirement

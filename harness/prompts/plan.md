@@ -34,7 +34,8 @@ Write exactly these files, nothing else:
 4. `checks/check_project.sh` — only if the gate must learn a new tool; never weaken it.
 
 Rules for a good plan:
-- Atomic means one session can finish the task in well under an hour and one check can prove it.
+- Atomic means one feature slice with its tests, up to about 30 minutes of work for one session
+  (the session stops at 45 minutes), and one check can prove it. Prefer fewer, larger tasks over many small ones.
 - Each task stands alone: title + acceptance + files must be enough for a session that has read
   nothing else. Name paths, functions, routes, commands and formats exactly.
 - Every check must FAIL now (the work does not exist yet) and test the real outcome: run the code,
@@ -43,6 +44,10 @@ Rules for a good plan:
 - Acceptance checks exercise the product end to end the way `spec/DESIGN.md` describes: they start
   what they need, wait for it, test it as a user would, and stop it again (trap EXIT). They must be
   repeatable and leave no processes behind.
+- A requirement's `limit` lines say how its numbers are judged. For a `target`, the check prints the
+  measured value and passes up to the value plus the margin. A `hard` limit fails at the value. A noisy
+  measure (memory, time, throughput, anything that varies between runs) is taken at least 3 times and
+  judged on the median. Use exactly these numbers in checks and acceptance criteria; never tighten them.
 - Checks need no interaction and finish within a few minutes. Secrets are in the environment when
   checks run (from `.env`); never read `.env` yourself and never write a value into a file.
 - Every requirement above appears in the `requirements` of at least one task.

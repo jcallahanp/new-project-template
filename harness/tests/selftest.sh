@@ -30,10 +30,32 @@ cat > spec/requirements.json <<'JSON'
 JSON
 git init -q -b main; git config user.name selftest; git config user.email selftest@example.invalid
 git add -A; git commit -q -m "template"
-python3 -I harness/spec.py approve >/dev/null
+python3 -I harness/spec.py approve >/dev/null || { echo "SELFTEST FAIL: the self-test spec does not pass spec.py check:"; python3 -I harness/spec.py check; exit 1; }
 git init -q --bare "$repo.origin.git"; git remote add origin "$repo.origin.git"; git push -q -u origin main
 }
 make_repo "$tmp/repo"
+
+# numbers with a unit need a limits entry (hard or target, margin, measure); the self-test spec has none
+mkdir -p "$tmp/lim/spec"; cp -r harness "$tmp/lim/"
+lim_spec() {   # $1: the R1 limits as JSON, or "" for none; writes the self-test spec with "under 600 MB" in R1
+python3 -I - "$1" > "$tmp/lim/spec/requirements.json" <<'PY'
+import json, sys
+s = json.load(open("spec/requirements.json"))
+r = s["requirements"][0]
+r["statement"] = "When app/add.py is run with two integers, the system shall print their sum using under 600 MB of memory."
+if sys.argv[1]:
+    r["limits"] = json.loads(sys.argv[1])
+print(json.dumps(s))
+PY
+}
+lim_spec ""
+python3 -I "$tmp/lim/harness/spec.py" check > "$tmp/lim.txt" 2>&1 && { echo "SELFTEST FAIL: \"under 600 MB\" with no limits entry passed spec.py check"; exit 1; }
+grep -q 'R1: "600 MB" needs a `limits` entry' "$tmp/lim.txt" || { echo "SELFTEST FAIL: no clear problem for 600 MB: $(cat "$tmp/lim.txt")"; exit 1; }
+lim_spec '[{"name": "memory", "value": 600, "unit": "MB", "kind": "target", "measure": "peak RSS during a 2-minute run, median of 3 runs"}]'
+python3 -I "$tmp/lim/harness/spec.py" check > "$tmp/lim.txt" 2>&1 && { echo "SELFTEST FAIL: a target limit without a margin passed spec.py check"; exit 1; }
+lim_spec '[{"name": "memory", "value": 600, "unit": "MB", "kind": "target", "margin": "10%", "measure": "peak RSS during a 2-minute run, median of 3 runs"}]'
+python3 -I "$tmp/lim/harness/spec.py" render > "$tmp/lim.txt" 2>&1 || { echo "SELFTEST FAIL: a proper target limit was rejected: $(cat "$tmp/lim.txt")"; exit 1; }
+grep -q '^- memory: 600 MB, target (passes up to 600 MB + 10%); measured: peak RSS' "$tmp/lim/spec/REQUIREMENTS.md" || { echo "SELFTEST FAIL: render does not show the limit"; exit 1; }
 
 unset HARNESS_MODEL HARNESS_EFFORT HARNESS_ESCALATE_MODEL HARNESS_FALLBACK_MODEL
 for k in DESIGN PLAN WORK VERIFY JUDGE AUDIT; do unset "HARNESS_MODEL_$k" "HARNESS_EFFORT_$k"; done

@@ -77,7 +77,7 @@ MAX_ATTEMPTS = 3            # tries per task / plan / design before it is blocke
 MAX_ROUNDS = 3              # planning rounds per milestone (round 2+ = acceptance checks still failing)
 MAX_AUDITS = 3              # audits per run; each failed audit adds one fix milestone
 FAIL_STREAK = 5             # legs in a row without progress before the loop gives up
-MAX_TASKS = 25              # per planning round
+MAX_TASKS = 12              # per planning round (fewer, larger tasks: each session pays a fixed start-up)
 MAX_MILESTONES = 12
 LEG_SECONDS = {"design": 2400, "plan": 2700, "work": 2700, "verify": 900, "judge": 900, "audit": 2400}
 LEG_TURNS = {"design": "100", "plan": "100", "work": "200", "verify": "50", "judge": "50", "audit": "100"}
@@ -544,7 +544,10 @@ def plan_leg(m, cards, branch):
     first_t = 1 + max([int(k["id"].split(".T")[1]) for k in kids(cards, mid)] or [0])
     plan_file = f"plan/{mid}.r{rnd}.jsonl"
     reqs = {q["id"]: q for q in spec()["requirements"]}
-    req_text = "\n".join(f"- {rid}: {reqs[rid]['statement']}\n  verify: {reqs[rid].get('verify', '')}" for rid in m["requirements"] if rid in reqs) or "(none: this milestone only fixes the gaps described in the goal)"
+    lim = lambda x: (f"\n  limit {x.get('name')}: {x.get('kind')} {x.get('value')} {x.get('unit')}, margin {x.get('margin', 0)}; "
+                     f"measured: {x.get('measure')}")
+    req_text = "\n".join(f"- {rid}: {reqs[rid]['statement']}\n  verify: {reqs[rid].get('verify', '')}" + "".join(map(lim, reqs[rid].get("limits", [])))
+                         for rid in m["requirements"] if rid in reqs) or "(none: this milestone only fixes the gaps described in the goal)"
     feedback = "\n".join(x for x in [m.get("replan"), m.get("note")] if x) or "none (first plan for this milestone)"
     frozen = [p for p in git("ls-files", "checks/acceptance").splitlines()
               if Path(p).name.split(".")[0] not in m.get("regen", []) and Path(p).name != ".gitkeep"]
