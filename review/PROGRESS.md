@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T1 (droplet inventory) waits for John. T2 runs. T3 done.
+Phase: T1 (droplet inventory) waits for John. T2 and T3 done. T4 starts when T1 is in.
 
 ## Done
 
@@ -23,6 +23,12 @@ Phase: T1 (droplet inventory) waits for John. T2 runs. T3 done.
   (`loop.py:518`), tolerant VERDICT/GAP parsing (`loop.py:576,592-593`), plan leg limit 1800 s to
   2700 s (`loop.py:66`), scout on Sonnet and critic on Opus. Check (by the lead, not the agent):
   `diff` of `loop.py` and the agent files between template `5c4290e` and `feb4339` shows exactly these.
+- 2026-11-16: T2 done (Sonnet agent): `review/analysis/ledger_stats.py`, `review/analysis/run-data.md`.
+  Check (by the lead): the script re-run on `opencode-ui` `7901f58` exits 0 and all 163 output lines
+  appear verbatim in `run-data.md`; the 600 MB story matches commit `e69debe` and R24 in the spec.
+  Key numbers: 127 legs, 14h40m in legs, 21h05m wall, 52 tasks done; work 64 %, verify 19 %, plan
+  14 % of leg time; verify failed 2 of 54; 14 of 66 work legs failed (20.6 % of leg time); 3
+  timeouts (11.9 %); 3 tasks needed John, all fixed by changing a check or the limit, not the product.
 
 ## Waiting on John
 
