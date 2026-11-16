@@ -55,3 +55,20 @@ What this harness borrows, and from where. Collected 2026-11-13.
 - `Autonomous-Agent4`: the command guard hook and the "no work without a task line" rule.
 - `framework` (`skills/interview`): one question per message, playback, EARS, the missing /
   inconsistent / redundant audit.
+
+## Changes from the 2026-11 review
+
+The review of the `opencode-ui` run and the droplet is in `review/FINDINGS.md`. Changes C1 to C12:
+
+- **C1** Model per step: Fable for design, plan, judge and audit, Opus 5.5 for work and verify, Fable for retries. Work and verify were most of the leg time and each is script-checked.
+- **C2** On a usage limit, a work or verify leg runs on the other model instead of waiting; the run lost time to limit waits.
+- **C3** `CHECK-WRONG` path with a read-only judge: a wrong check failed the same way three times and needed John anyway.
+- **C4** Numbers in the spec are `hard` or `target` with a margin: an exact limit failed on measurement noise.
+- **C5** Model, effort, tokens and cost per leg in `PROGRESS.md`, the ledger and `status`: the run data had none, so C1, C2 and C8 could not be measured.
+- **C6** The verifier gets the loop's check and gate output and does not run them again, which saves time.
+- **C7** Three fixes from `opencode-ui` `feb4339` (frozen acceptance checks in re-plans, tolerant VERDICT/GAP parsing, longer plan limit): bugs a real run found.
+- **C8** At most 12 tasks per planning round and larger tasks: each session pays a fixed start-up cost.
+- **C9** Scout subagent on Sonnet and critic on Opus instead of inheriting Fable: they are read-only helpers.
+- **C10** Secrets from the project's own vault when it has a token file, read and write, scoped to that project; `.env` otherwise: agents must create and store keys, and the droplet uses a vault.
+- **C11** Droplet preflight and the long-lived token file `~/.config/claude/oauth.env`: an expiring sign-in stopped unattended runs, and desktop browsers made checks noisy.
+- **C12** A browser MCP for web UIs through `spec/mcp.json`: run sessions had no browser.
