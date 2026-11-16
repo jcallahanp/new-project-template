@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T6 (improved template), sub-task T6a next.
+Phase: T6 (improved template), sub-task T6b next.
 
 ## Done
 
@@ -46,6 +46,9 @@ Phase: T6 (improved template), sub-task T6a next.
   against the template shows no difference except `review/`; `bash harness/tests/selftest.sh` ->
   SELFTEST PASS. Added `CLAUDE.md` step 0 so sessions in this repo follow `review/`. T6 split into
   T6a to T6f; T8 added (keep `review/` out of `main`).
+- 2026-11-16: T6a done (Opus agent, commit `46ee902`). Check (by the lead): `harness/loop.py`,
+  `.claude/agents/scout.md` and `critic.md` byte-identical to `opencode-ui` `feb4339`; self-test
+  PASS (14 legs) with new cases for markdown VERDICT/GAP lines and a frozen-acceptance re-plan.
 
 ## Waiting on John
 
