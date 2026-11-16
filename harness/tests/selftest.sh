@@ -62,6 +62,7 @@ python3 -I "$tmp/lim/harness/spec.py" render > "$tmp/lim.txt" 2>&1 || { echo "SE
 grep -q '^- memory: 600 MB, target (passes up to 600 MB + 10%); measured: peak RSS' "$tmp/lim/spec/REQUIREMENTS.md" || { echo "SELFTEST FAIL: render does not show the limit"; exit 1; }
 
 unset HARNESS_MODEL HARNESS_EFFORT HARNESS_ESCALATE_MODEL HARNESS_FALLBACK_MODEL
+unset BAO_TOKEN SECRET_PROJECT        # the state-machine runs use .env; the vault part below sets up its own fake
 for k in DESIGN PLAN WORK VERIFY JUDGE AUDIT; do unset "HARNESS_MODEL_$k" "HARNESS_EFFORT_$k"; done
 export MOCK_STATE="$tmp/mock" HARNESS_CLAUDE="$src/harness/tests/mock_claude" HARNESS_RETRY_WAITS=0,0 HARNESS_LIMIT_POLL=1 \
        HARNESS_EFFORT_VERIFY=medium HARNESS_FALLBACK_MODEL=claude-opus-5-5   # = the Opus legs' own model: they must fall back to Fable
@@ -188,4 +189,79 @@ grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-3.txt" || fail "the judge's r
 grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-2.txt" && fail "mock: the judge's reason appeared before the judge ran"
 grep -q 'MARKER-T2-CHECK-OUTPUT sub ran' "$tmp/mock2/VERIFIER-M1.T2-1.txt" || fail "the verify brief does not carry the loop's check output"
 grep -q '  PASS' "$tmp/mock2/VERIFIER-M1.T2-1.txt" || fail "the verify brief does not carry the loop's gate output"
-echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1)"
+# Secrets (C10): a fake `secret` helper with two projects. The project's spec secrets reach checks and run sessions,
+# the other project's keys do not (its token is even in the shell), a session's `secret set` is seen by a later check,
+# check_scope catches a vault value, and the guard holds deploys unless the approved spec says deploy.by agent.
+make_repo "$tmp/repo3"
+python3 -I - <<'PY'
+import json
+s = json.load(open("spec/requirements.json"))
+s["secrets"] = [{"name": "SC_API_KEY", "purpose": "the calculator's API key, supplied by John"},
+                {"name": "AGENT_KEY", "purpose": "a key a run session creates in a web dashboard", "created_by": "agent"},
+                {"name": "OTHER_KEY", "purpose": "exists only in another project's vault", "created_by": "agent"}]
+json.dump(s, open("spec/requirements.json", "w"))
+PY
+git commit -q -am "spec: secrets"; python3 -I harness/spec.py approve >/dev/null || fail "a spec with created_by does not pass spec.py"
+mkdir -p "$tmp/vbin" "$tmp/home/.config/openbao" "$tmp/home-empty" "$tmp/mock3"
+cp "$src/harness/tests/fake_secret" "$tmp/vbin/secret"; printf 'tok-calc\n' > "$tmp/home/.config/openbao/selftest-calc.token"
+sc_val="vault-sc-$(date +%s%N)"; ag_val="agent-key-$(date +%s%N)"   # made here, so no tracked file holds them
+printf '{"selftest-calc": {"token": "tok-calc", "keys": {"SC_API_KEY": "%s"}},
+ "other": {"token": "tok-other", "keys": {"OTHER_KEY": "other-project-value-0123456789"}}}' "$sc_val" > "$tmp/vault.json"
+vault_env=(EXPECT_SC="$sc_val" MOCK_AGENT_VALUE="$ag_val" HOME="$tmp/home" PATH="$tmp/vbin:$PATH" FAKE_VAULT="$tmp/vault.json" BAO_TOKEN=tok-other SECRET_PROJECT=other
+           MOCK_STATE="$tmp/mock3" MOCK_SCENARIO=vault HARNESS_CLAUDE="$src/harness/tests/mock_claude")
+env "${vault_env[@]}" python3 -I harness/spec.py secrets > "$tmp/sec.txt" 2>&1 || fail "spec.py secrets with the vault: $(cat "$tmp/sec.txt")"
+grep -q '^ok    vault project selftest-calc answers' "$tmp/sec.txt" && grep -q '^note  .*a run session creates and stores them: AGENT_KEY, OTHER_KEY' "$tmp/sec.txt" \
+  || fail "spec.py secrets does not report the vault and the agent's keys: $(cat "$tmp/sec.txt")"
+env "${vault_env[@]}" python3 -I - > "$tmp/vault.txt" 2>&1 <<'PY' || fail "vault: $(cat "$tmp/vault.txt")"
+import os, sys
+sys.path.insert(0, "harness")
+import loop
+st = os.environ["MOCK_STATE"]
+names = lambda f: set(open(f"{st}/{f}").read().split())
+dump = 'python3 -c "import os; print(chr(10).join(os.environ))" > "$MOCK_STATE/%s"'     # names only, never values
+assert loop.run_script(dump % "check-1.txt")[0]
+c1 = names("check-1.txt")
+assert {"SC_API_KEY", "BAO_TOKEN", "SECRET_PROJECT"} <= c1, "(1) the project's secret and its vault token do not reach a check"
+assert not {"OTHER_KEY", "AGENT_KEY"} & c1, "(2) a key of another project (or not yet created) reached a check"
+assert loop.run_script('[ "$SC_API_KEY" = "$EXPECT_SC" ] && [ "$SECRET_PROJECT" = selftest-calc ]')[0], "(1) wrong value in a check"
+r = loop.run_claude("work", "You are the WORKER session.\nTASK M9.T1\nATTEMPT: 1\n", loop.OPUS, "high")
+assert r["ok"] and r["text"] == "stored AGENT_KEY", f"(3) the run session could not store its key: {r['text']}"
+s1 = names("env-M9.T1.txt")
+assert "OTHER_KEY" not in s1 and names("ls-M9.T1.txt") == {"SC_API_KEY"}, "(2) the run session sees another project's keys"
+assert {"SC_API_KEY", "BAO_TOKEN", "SECRET_PROJECT"} <= s1, "(1) the project's secret and its vault token do not reach a run session"
+assert loop.run_script('[ "$AGENT_KEY" = "$MOCK_AGENT_VALUE" ] && [ -z "${OTHER_KEY+x}" ]')[0], "(3) a later check does not see the key the session stored"
+open("app.cfg", "w").write(f"key = {os.environ['EXPECT_SC']}\n")
+loop.git("add", "app.cfg"); loop.git("commit", "-q", "-m", "leak")
+ok, out = loop.run_gates()
+assert not ok and "app.cfg: contains the value of SC_API_KEY" in out, f"(4) check_scope missed a vault value in a tracked file: {out}"
+assert os.environ["EXPECT_SC"] not in out, "(4) check_scope printed the value"
+loop.git("reset", "-q", "--hard", "HEAD~1")
+ok, out = loop.run_gates(); assert ok, f"gates fail once the leak is gone: {out}"
+PY
+deploy() { printf '{"tool_input":{"command":"npx wrangler deploy"}}' | CLAUDE_PROJECT_DIR="$1" bash harness/guard.sh 2>/dev/null; }
+deploy "$PWD" && fail "(5) the guard let wrangler deploy through without deploy.by agent"
+mkdir -p "$tmp/dep/spec"; cp -r harness "$tmp/dep/"
+python3 -I -c 'import json; s = json.load(open("spec/requirements.json")); s["deploy"]["by"] = "agent"; print(json.dumps(s))' > "$tmp/dep/spec/requirements.json"
+python3 -I "$tmp/dep/harness/spec.py" check >/dev/null || fail "spec.py rejects deploy.by agent"
+printf '{"sha256": "%s"}\n' "$(sha256sum "$tmp/dep/spec/requirements.json" | cut -d' ' -f1)" > "$tmp/dep/spec/APPROVED"
+deploy "$tmp/dep" || fail "(5) the guard blocked wrangler deploy although the approved spec says deploy.by agent"
+echo " " >> "$tmp/dep/spec/requirements.json"
+deploy "$tmp/dep" && fail "(5) the guard trusted deploy.by agent in a spec changed after approval"
+sed -i 's/"by": "agent"/"by": "bob"/' "$tmp/dep/spec/requirements.json"
+python3 -I "$tmp/dep/harness/spec.py" check >/dev/null && fail "spec.py accepts deploy.by bob"
+# (6) without a vault token the store is .env, as before: checks get its values, run sessions do not.
+printf 'SC_API_KEY=dotenv-value-0123456789\n' > .env
+env -u BAO_TOKEN -u SECRET_PROJECT HOME="$tmp/home-empty" MOCK_STATE="$tmp/mock4" MOCK_SCENARIO=vault HARNESS_CLAUDE="$src/harness/tests/mock_claude" \
+  python3 -I - > "$tmp/dotenv.txt" 2>&1 <<'PY' || fail ".env: $(cat "$tmp/dotenv.txt")"
+import sys
+sys.path.insert(0, "harness")
+import loop
+assert loop.vault() is None, "a vault was used without a token"
+assert loop.child_env().get("SC_API_KEY") == "dotenv-value-0123456789", "(6) .env does not reach checks"
+loop.run_claude("work", "You are the WORKER session.\nTASK M9.T2\nATTEMPT: 1\n", loop.OPUS, "high")
+assert "SC_API_KEY" not in open(loop.os.environ["MOCK_STATE"] + "/env-M9.T2.txt").read().split(), "(6) .env values now reach run sessions"
+PY
+HOME="$tmp/home-empty" python3 -I harness/spec.py secrets | grep -q "every required secret John supplies is in .env" || fail "(6) spec.py secrets does not read .env"
+rm .env
+
+echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback)"

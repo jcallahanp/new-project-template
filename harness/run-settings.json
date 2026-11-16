@@ -2,13 +2,13 @@
   "permissions": {
     "defaultMode": "acceptEdits",
     "disableBypassPermissionsMode": "disable",
-    "allow": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task", "mcp__playwright"],
+    "allow": ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit", "WebFetch", "WebSearch", "Agent", "Task", "mcp__playwright", "mcp__browser"],
     "deny": [
       "Bash(sudo:*)", "Bash(su:*)", "Bash(git push:*)", "Bash(gh:*)", "Bash(ssh:*)", "Bash(scp:*)", "Bash(rsync:*)",
-      "Bash(nc:*)", "Bash(systemctl:*)", "Bash(crontab:*)", "Bash(paperclip:*)",
+      "Bash(nc:*)", "Bash(systemctl:*)", "Bash(crontab:*)",
       "Read(./.env)", "Read(./.env.local)", "Read(./.env.production)",
-      "Read(~/.ssh/**)", "Read(~/.gnupg/**)", "Read(~/.config/**)", "Read(~/.paperclip/**)", "Read(~/.claude/**)",
-      "Read(~/.claude.json)", "Read(~/.claude-deepseek/**)", "Read(~/.claude-abliterated/**)", "Read(~/.local/state/**)",
+      "Read(~/.ssh/**)", "Read(~/.gnupg/**)", "Read(~/.config/**)", "Read(~/.claude/**)",
+      "Read(~/.claude.json)", "Read(~/.local/state/**)",
       "Read(~/.local/share/keyrings/**)", "Read(~/.mozilla/**)", "Read(~/snap/**)", "Read(~/.aws/**)", "Read(~/.netrc)",
       "Read(~/.git-credentials)", "Read(~/.bash_history)"
     ]

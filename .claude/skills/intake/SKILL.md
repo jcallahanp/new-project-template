@@ -105,8 +105,8 @@ Write `spec/requirements.json` (update it as you go, so nothing depends on this 
   "non_goals": ["what it will not do"],
   "constraints": ["what the build must respect"],
   "assumptions": ["defaults John agreed to"],
-  "deploy": {"target": "where it runs", "ready_when": ["observable statement", "another"]},
-  "secrets": [{"name": "NAME_OF_VARIABLE", "purpose": "what it is used for", "required": true}],
+  "deploy": {"target": "where it runs", "ready_when": ["observable statement", "another"], "by": "john"},
+  "secrets": [{"name": "NAME_OF_VARIABLE", "purpose": "what it is used for", "required": true, "created_by": "john"}],
   "human_gates": ["things only John does"],
   "open_questions": []
 }
@@ -159,8 +159,12 @@ judgement: approval is John's.
 
 ## Step 6. Secrets
 
-If the spec lists secrets, tell John to put the values in `.env` himself (a copy of `.env.example`
-with the values filled in), in his editor, not in this conversation. `.env` is git-ignored. Then run
+`created_by` is `john` (he supplies it before the run) or `agent` (a run session creates it, for
+example an API key made in a web dashboard, and stores it). `deploy.by` is `john` unless he wants the
+run to deploy and publish itself (`agent`). If the spec lists secrets John supplies, he puts the values
+in the vault when `secret` is on PATH (`secret --project <project> set NAME -`, value on stdin), else in
+`.env` himself (a copy of `.env.example` with the values filled in), in his editor, not in this
+conversation. `.env` is git-ignored. Then run
 `python3 harness/spec.py secrets` to confirm every required name has a value (it never prints one).
 If a key has to be created first, tell him where; do not start the run with a required secret missing.
 

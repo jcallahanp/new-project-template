@@ -6,7 +6,7 @@ already holds project code, use the scout subagent to learn what exists.
 
 FEEDBACK ON THE PREVIOUS DESIGN ATTEMPT: {{FEEDBACK}}
 
-Write exactly these files, nothing else:
+Write exactly these files, nothing else (the sixth only for a web UI):
 
 1. `spec/DESIGN.md` — what a session that has read nothing else needs in order to build this:
    - the stack and why (prefer boring, widely used tools already installed on this machine; honour
@@ -17,7 +17,7 @@ Write exactly these files, nothing else:
    - "Running and testing": the exact commands to install, start, test and build;
    - how the acceptance checks will exercise the real product end to end (start it, call it, drive it
      as a user would: a real browser via Playwright for a UI, real HTTP for an API, the real CLI for a
-     tool), and how external services are handled in checks (real call with the secret from `.env`,
+     tool), and how external services are handled in checks (real call with the secret from the environment,
      or a recorded/local fake when a real call would cost money or change live data);
    - decisions you made that the spec left open, each with one line of why.
 2. `plan/milestones.json` — a JSON list of 1 to {{MAX_MILESTONES}} milestones, in build order:
@@ -36,11 +36,20 @@ Write exactly these files, nothing else:
 4. `init.sh` — installs dependencies so a fresh clone can run the checks. Idempotent, non-interactive,
    never starts a long-running server, also skips cleanly while there is nothing to install.
 5. `.gitignore` — add the dependency and build folders of your stack (keep the existing lines).
+6. `spec/mcp.json` — only when the product has a web UI: a browser for the run sessions, as
+   `{"mcpServers": {"browser": {"command": "agent-browser-mcp", "args": []}}}` when `agent-browser-mcp`
+   is on PATH (`command -v agent-browser-mcp`), else
+   `{"mcpServers": {"browser": {"command": "npx", "args": ["-y", "@playwright/mcp@0.0.83", "--headless"]}}}`.
+   Name the server `browser` (its tools are allowed as `mcp__browser`). Later sessions get it with the
+   harness's own servers.
 
 Rules:
 - Do not write product code, tasks or acceptance checks: later sessions do that from your design.
 - Do not add scope. If the spec cannot be designed without something only John can supply, write
   nothing and say exactly what is missing as your final message.
-- Secrets are named in the spec and live in `.env`; never read `.env`, never put a value in a file.
+- Secrets are named in the spec; the loop puts their values in the environment of every check (from
+  the vault or `.env`) and, with the vault, of every session. Never read `.env`, never print a value or put one in a file. A
+  secret with `"created_by": "agent"` does not exist yet: say in the design which task creates it
+  (for example in a web dashboard through the browser) and stores it with `secret set NAME -`.
 
 Finish with a three-line summary: stack, number of milestones, biggest risk.

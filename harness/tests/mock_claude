@@ -17,7 +17,11 @@ MOCK_SCENARIO=judge is a second, smaller run for the "check is wrong" path. M1.T
 judge agrees. M1.T2 is
 independent and passes; its check prints a line the verifier must see in its brief. M1.T3's worker fails
 attempts 1 and 2 with its own bug and claims CHECK-WRONG on both; the judge disagrees, and attempt 3 is
-right. No provider errors or limits in this scenario."""
+right. No provider errors or limits in this scenario.
+
+MOCK_SCENARIO=vault: a WORKER writes the names (never the values) of the environment variables it sees to
+$MOCK_STATE/env-<task>.txt and the output of `secret ls` to $MOCK_STATE/ls-<task>.txt, then stores a key it
+"created" ($MOCK_AGENT_VALUE) with `secret set AGENT_KEY -`."""
 import json, os, re, subprocess, sys
 from pathlib import Path
 
@@ -65,6 +69,15 @@ with open(state / "calls", "a") as f:
     f.write(f"{kind} {model} {effort} {tid}\n")
 if kind in ("WORKER", "VERIFIER"):
     (state / f"{kind}-{tid}-{count(f'brief-{kind}-{tid}')}.txt").write_text(prompt)
+if scenario == "vault" and kind == "WORKER":
+    (state / f"env-{tid}.txt").write_text("\n".join(sorted(os.environ)) + "\n")
+    try:
+        ls = subprocess.run(["secret", "ls"], capture_output=True, text=True)
+        (state / f"ls-{tid}.txt").write_text(ls.stdout if ls.returncode == 0 else f"ls failed: {ls.stderr}")
+        r = subprocess.run(["secret", "set", "AGENT_KEY", "-"], input=os.environ["MOCK_AGENT_VALUE"] + "\n", text=True, capture_output=True)
+        out("stored AGENT_KEY" if r.returncode == 0 else f"secret set failed: {r.stderr}")
+    except OSError as e:
+        out(f"no secret helper: {e}")
 if scenario == "judge" and kind == "PLANNER":
     tasks = [{"id": "T1", "title": "Write app/add.py", "acceptance": "python3 app/add.py 2 3 prints 5 on one line", "requirements": ["R1"], "files": ["app/add.py"], "depends_on": []},
              {"id": "T2", "title": "Write app/sub.py", "acceptance": "python3 app/sub.py 5 3 prints 2 on one line", "requirements": ["R2"], "files": ["app/sub.py"], "depends_on": []},

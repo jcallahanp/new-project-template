@@ -4,14 +4,21 @@
   spec.py check      list every problem that would make the build guess (exit 1 if any)
   spec.py render     write spec/REQUIREMENTS.md from the JSON (the JSON is the only source of truth)
   spec.py approve    check + render + write .env.example + record the approval (hash) + commit
-  spec.py secrets    say which secrets named in the spec are missing from .env (exit 1 if any required one is)
+  spec.py secrets    say which secrets named in the spec are missing from the store (exit 1 if a required one John
+                     supplies is missing; secrets an agent creates during the run may be missing at the start)
+
+The secret store is the droplet's OpenBao vault when the `secret` helper is on PATH and the project has a token
+(~/.config/openbao/<project>.token, or BAO_TOKEN); otherwise `.env`. The vault project is the spec's `project` slug.
 
 The build loop refuses to run unless spec/APPROVED matches the current JSON, so a spec edited after
 approval has to be approved again.
 """
 import hashlib
 import json
+import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -101,8 +108,13 @@ def problems(s):
     for x in s["secrets"]:
         if not isinstance(x, dict) or not re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", str(x.get("name", ""))) or not x.get("purpose"):
             out.append(f"secret {x!r}: needs a NAME_LIKE_THIS and a purpose (never the value)")
-        elif any(k not in ("name", "purpose", "required") for k in x):
-            out.append(f"secret {x['name']}: only name, purpose, required are allowed (never a value)")
+        elif any(k not in ("name", "purpose", "required", "created_by") for k in x):
+            out.append(f"secret {x['name']}: only name, purpose, required, created_by are allowed (never a value)")
+        elif x.get("created_by", "john") not in ("john", "agent"):
+            out.append(f"secret {x['name']}: created_by must be `john` (he supplies it before the run) or `agent` (a run session "
+                       "creates it, for example an API key made in a web dashboard)")
+    if s["deploy"].get("by", "john") not in ("john", "agent"):
+        out.append("`deploy.by` must be `john` (default: he deploys) or `agent` (a run session may deploy and publish)")
     if not s["requirements"]:
         out.append("no requirements yet")
     seen = set()
@@ -151,9 +163,11 @@ def render(s):
     for title, key in (("Will not do", "non_goals"), ("Constraints", "constraints"), ("Assumptions", "assumptions"),
                        ("Only John does these", "human_gates")):
         L += [f"## {title}", ""] + ([f"- {x}" for x in s[key]] or ["- none"]) + [""]
-    L += ["## Deploy", "", f"Target: {s['deploy']['target']}", "", "Ready to deploy when:", ""] + [f"- {x}" for x in s["deploy"]["ready_when"]]
-    L += ["", "## Secrets (names only; values go in `.env`)", ""]
-    L += [f"- `{x['name']}`{'' if x.get('required', True) else ' (optional)'}: {x['purpose']}" for x in s["secrets"]] or ["- none"]
+    L += ["## Deploy", "", f"Target: {s['deploy']['target']}", "",
+          f"Deployed by: {'a run session (agent)' if s['deploy'].get('by') == 'agent' else 'John'}", "", "Ready to deploy when:", ""] + [f"- {x}" for x in s["deploy"]["ready_when"]]
+    L += ["", "## Secrets (names only; values go in the vault or `.env`)", ""]
+    L += [f"- `{x['name']}`{'' if x.get('required', True) else ' (optional)'}{' (created by an agent during the run)' if x.get('created_by') == 'agent' else ''}: "
+          f"{x['purpose']}" for x in s["secrets"]] or ["- none"]
     return "\n".join(L) + "\n"
 
 
@@ -168,22 +182,79 @@ def env_keys():
     return keys
 
 
+def slug(s):
+    """The project's short name: the build branch is build/<slug> and the vault project is <slug>."""
+    return re.sub(r"[^a-z0-9]+", "-", str(s.get("project", "project")).lower()).strip("-")[:40] or "project"
+
+
+def vault(s):
+    """(project, token) when the droplet's OpenBao helper `secret` is the secret store for this project, else None."""
+    p = slug(s)
+    f = Path.home() / ".config" / "openbao" / f"{p}.token"
+    if not shutil.which("secret"):
+        return None
+    tok = f.read_text().strip() if f.is_file() else os.environ.get("BAO_TOKEN", "")
+    return (p, tok) if tok else None
+
+
+def vault_values(s):
+    """The spec's secrets that exist in the vault as {NAME: value}, and the variables a session needs to use the vault
+    (BAO_TOKEN, SECRET_PROJECT). Names not in the vault yet are skipped. Raises RuntimeError (never with a value)
+    when the vault does not answer."""
+    p, tok = vault(s)
+    extra = {"BAO_TOKEN": tok, "SECRET_PROJECT": p}
+    env = {**os.environ, **extra}
+    r = subprocess.run(["secret", "--project", p, "ls"], capture_output=True, text=True, env=env, timeout=60)
+    if r.returncode:
+        raise RuntimeError(f"the vault does not answer: `secret --project {p} ls` exited {r.returncode} ({r.stderr.strip()[-200:]})")
+    stored = set(r.stdout.split())
+    names = [x["name"] for x in s.get("secrets", []) if isinstance(x, dict) and x.get("name") in stored]
+    vals = {}
+    if names:
+        r = subprocess.run(["secret", "--project", p, "env", *names], capture_output=True, text=True, env=env, timeout=60)
+        if r.returncode:
+            raise RuntimeError(f"`secret --project {p} env` exited {r.returncode}")     # stdout may hold values: never shown
+        for line in r.stdout.splitlines():
+            try:
+                parts = shlex.split(line)
+            except ValueError:
+                continue
+            if len(parts) == 2 and parts[0] == "export" and "=" in parts[1]:
+                k, v = parts[1].split("=", 1)
+                vals[k] = v
+    return vals, extra
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd not in ("check", "render", "approve", "secrets"):
         sys.exit(__doc__)
     s = load()
     probs = problems(s)
-    if cmd == "secrets":
-        have = env_keys()
-        missing = [x["name"] for x in s.get("secrets", []) if x.get("required", True) and not have.get(x["name"])]
-        optional = [x["name"] for x in s.get("secrets", []) if not x.get("required", True) and not have.get(x["name"])]
+    if cmd == "secrets":                    # each output line starts with ok, note or FAIL (preflight shows them so)
+        v = vault(s)
+        if v:
+            try:
+                have = vault_values(s)[0]
+            except RuntimeError as e:
+                sys.exit(f"FAIL  {e}")
+            print(f"ok    vault project {v[0]} answers (secret --project {v[0]} ls)")
+            store, how = f"the vault (project {v[0]})", f"secret --project {v[0]} set NAME -   (value on stdin)"
+        else:
+            have, store, how = env_keys(), ".env", "add NAME=value lines to .env"
+        sec = [x for x in s.get("secrets", []) if isinstance(x, dict)]
+        john = [x for x in sec if x.get("created_by", "john") != "agent"]
+        agent = [x["name"] for x in sec if x.get("created_by") == "agent" and not have.get(x["name"])]
+        missing = [x["name"] for x in john if x.get("required", True) and not have.get(x["name"])]
+        optional = [x["name"] for x in john if not x.get("required", True) and not have.get(x["name"])]
+        if agent:
+            print(f"note  not in {store} yet; a run session creates and stores them: " + ", ".join(agent))
         if optional:
-            print("optional secrets not set: " + ", ".join(optional))
+            print(f"note  optional secrets not set in {store}: " + ", ".join(optional))
         if missing:
-            print("missing from .env (add NAME=value lines): " + ", ".join(missing))
+            print(f"FAIL  missing from {store} ({how}): " + ", ".join(missing))
             sys.exit(1)
-        print(f"secrets: all {len(s.get('secrets', [])) - len(optional)} required value(s) present in .env")
+        print(f"ok    every required secret John supplies is in {store}")
         return
     if probs:
         print(f"{len(probs)} problem(s) in spec/requirements.json:")

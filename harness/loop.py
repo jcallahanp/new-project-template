@@ -63,6 +63,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 H = ROOT / "harness"
+sys.path.insert(0, str(H))
+import spec as speclib                           # noqa: E402  (harness/spec.py: the secret store)
 RUN = ROOT / ".harness-run"                      # git-ignored runtime files (log, lock, last stop)
 CLAUDE = os.environ.get("HARNESS_CLAUDE") or "claude"
 FABLE, OPUS = "claude-fable-5-2", "claude-opus-5-5"
@@ -89,9 +91,10 @@ HARNESS = ["CLAUDE.md", "harness", ".claude", ".github", "checks/run_gates.sh", 
            "checks/check_progress.sh", "checks/check_protected.sh"]
 SPEC = ["spec/BRIEF.md", "spec/REQUIREMENTS.md", "spec/requirements.json", "spec/APPROVED", ".env.example"]
 STATE = ["ledger.jsonl", "PROGRESS.md", "DELIVERY.md"]                       # written by this script only
-DESIGN_PATHS = ["spec/DESIGN.md", "plan/milestones.json", "checks/check_project.sh", "init.sh", ".gitignore"]
+PROJECT_MCP = "spec/mcp.json"                    # MCP servers the design adds for this project (a browser for a web UI)
+DESIGN_PATHS = ["spec/DESIGN.md", "plan/milestones.json", "checks/check_project.sh", "init.sh", ".gitignore", PROJECT_MCP]
 PLAN_PATHS = ["plan", "checks/tasks", "checks/acceptance", "checks/check_project.sh"]
-WORK_FORBIDDEN = HARNESS + SPEC + STATE + ["spec/DESIGN.md", "plan", "checks"]
+WORK_FORBIDDEN = HARNESS + SPEC + STATE + ["spec/DESIGN.md", PROJECT_MCP, "plan", "checks"]
 
 TRANSIENT = re.compile(r"API Error:? ?(408|409|5\d\d)|overloaded|timed? ?out|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|"
                        r"fetch failed|under capacity|connection error|network error|internal server error|bad gateway", re.I)
@@ -159,9 +162,24 @@ def spec_problem():
     return None
 
 
+def vault():
+    """(project, token) when the OpenBao vault is this project's secret store (see harness/spec.py), else None."""
+    return speclib.vault(spec()) if SPECJ.is_file() else None
+
+
 def child_env():
-    """Environment for checks: the shell's, plus .env (secrets stay out of git and out of the prompts)."""
+    """Environment for checks: the shell's, plus the project's secrets (they stay out of git and out of the prompts).
+    With the vault: the spec's secrets that exist in it, plus BAO_TOKEN and SECRET_PROJECT so that `secret get/set`
+    works for this project only. Without it: .env."""
     env = dict(os.environ)
+    if vault():
+        try:
+            vals, extra = speclib.vault_values(spec())
+        except RuntimeError as e:
+            raise Stop(f"{e}. Check the vault (secret --project <project> ls), then start the run again.")
+        env.update(vals)
+        env.update(extra)
+        return env
     f = ROOT / ".env"
     if f.is_file():
         for line in f.read_text().splitlines():
@@ -258,7 +276,8 @@ def run_claude(kind, prompt, model, effort):
     """One fresh session. Returns {ok, text, turns, secs, denials, err, kind, model, effort, fallback, input,
     output, cache_read, cache_write, cost_usd, models} where err is None or
     'transient' | 'limit' | 'auth' | 'timeout' | 'other'. cost_usd is Claude Code's estimate at API list prices."""
-    cmd = [CLAUDE, "-p", "--settings", str(H / "run-settings.json"), "--strict-mcp-config", "--mcp-config", str(H / "mcp.json"),
+    mcp = [str(H / "mcp.json")] + ([str(ROOT / PROJECT_MCP)] if (ROOT / PROJECT_MCP).is_file() else [])
+    cmd = [CLAUDE, "-p", "--settings", str(H / "run-settings.json"), "--strict-mcp-config", "--mcp-config", *mcp,
            "--output-format", "json", "--max-turns", LEG_TURNS[kind], "--model", model]
     if effort:
         cmd += ["--effort", effort]
@@ -266,8 +285,9 @@ def run_claude(kind, prompt, model, effort):
         cmd += ["--disallowed-tools", "Edit", "Write", "NotebookEdit"]
     t0 = time.time()
     # Own process group + a watchdog: the whole session tree is killed at the limit, even if it hangs.
+    # With the vault, a session gets the checks' environment: it can use the project's keys and `secret set` one it creates.
     proc = subprocess.Popen(cmd, cwd=ROOT, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, start_new_session=True)
+                            stderr=subprocess.PIPE, start_new_session=True, env=child_env() if vault() else None)
     timed_out = []
 
     def stop():
@@ -453,6 +473,11 @@ def design_leg(card, branch):
             problems.append(f"{f} was not written")
         elif sh(["bash", "-n", f]).returncode != 0:
             problems.append(f"{f} has a syntax error")
+    if (ROOT / PROJECT_MCP).is_file():
+        try:
+            assert isinstance(json.loads((ROOT / PROJECT_MCP).read_text()).get("mcpServers"), dict)
+        except (ValueError, AttributeError, AssertionError):
+            problems.append(f'{PROJECT_MCP} must be a JSON object {{"mcpServers": {{...}}}}')
     ms = []
     try:
         ms = json.loads(MILESTONES.read_text())
@@ -843,7 +868,11 @@ def cmd_run(a):
         branch = f"build/{slug}"
         git("switch", "-q", branch) if git("branch", "--list", branch) else git("switch", "-q", "-c", branch)
         say(f"working on branch {branch} (never on main)")
-    if not run_gates()[0]:
+    try:
+        gates_ok = run_gates()[0]
+    except Stop as e:
+        sys.exit(f"cannot start: {e}")
+    if not gates_ok:
         sys.exit("cannot start: gates are failing before the run starts; fix them first (bash checks/run_gates.sh)")
     cards = load()
     if not any(c.get("kind") == "design" for c in cards):

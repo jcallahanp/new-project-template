@@ -80,8 +80,15 @@ scripts, and will record it. The rules that matter most:
 
 ### Secrets
 
-- Names are in `spec/requirements.json`; values are in `.env`, which is never committed and which you
-  never read or print. Use them without showing them: `set -a; . ./.env; set +a; <command>`.
+- Names are in `spec/requirements.json`. Values live in one of two stores, never in git, never printed:
+  - **The vault** (on the droplet, when the `secret` helper is on PATH): the loop puts the project's
+    values in your environment and in every check's, with `BAO_TOKEN` and `SECRET_PROJECT` for this
+    project only. Use `$NAME`; `secret ls` lists names. A key you create (a secret with
+    `"created_by": "agent"`, for example an API key made in a web dashboard) is stored at once with
+    `printf '%s' "$value" | secret set NAME -`, never with the value on the command line.
+  - **`.env`** otherwise, which you never read or print: `set -a; . ./.env; set +a; <command>`.
+- Push a key to a platform (`secret get NAME | wrangler secret put NAME`) or deploy only when the
+  approved spec says `"deploy": {"by": "agent"}`; otherwise the guard blocks it and deploying is John's.
 - Never write a secret value into a file, a commit message, a test fixture or a log.
 
 ### Limits

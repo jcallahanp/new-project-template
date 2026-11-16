@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Secrets and size guard: no secret-shaped strings, no value from .env, no .env file and no file
-# over 5 MB in git.
+# Secrets and size guard: no secret-shaped strings, no value from .env or of a spec secret in the environment
+# (the loop loads the vault's values there), no .env file and no file over 5 MB in git. Never prints a value.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 rc=0
@@ -15,20 +15,28 @@ if [[ -n "$files" ]]; then
   fi
 fi
 
-# 2. .env stays out of git, and none of its values appears in a tracked file.
+# 2. .env stays out of git, and no value from .env or of a spec secret set in the environment appears in a tracked file.
 for f in .env .env.local .env.production; do
   if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then echo "  $f is tracked by git"; rc=1; fi
 done
-if [[ -f .env && -n "$files" ]]; then
+if [[ -n "$files" ]]; then
   python3 -I - <<'PY' || rc=1
-import re, subprocess, sys
-vals = {}
-for line in open(".env", errors="replace"):
-    m = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
-    if m and not line.lstrip().startswith("#"):
-        v = m.group(2).strip().strip("\"'")
-        if len(v) >= 12:                      # short values (ports, flags, hostnames) are not secrets
-            vals[m.group(1)] = v
+import json, os, re, subprocess, sys
+vals = set()                                  # (name, value) pairs
+if os.path.isfile(".env"):
+    for line in open(".env", errors="replace"):
+        m = re.match(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$", line)
+        if m and not line.lstrip().startswith("#"):
+            v = m.group(2).strip().strip("\"'")
+            if len(v) >= 12:                  # short values (ports, flags, hostnames) are not secrets
+                vals.add((m.group(1), v))
+try:
+    names = [x.get("name") for x in json.load(open("spec/requirements.json")).get("secrets", []) if isinstance(x, dict)]
+except (OSError, ValueError, AttributeError):
+    names = []
+for k in names:
+    if isinstance(k, str) and len(os.environ.get(k, "")) >= 12:
+        vals.add((k, os.environ[k]))
 bad = []
 for path in subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=True).stdout.split("\0"):
     if not path:
@@ -37,7 +45,7 @@ for path in subprocess.run(["git", "ls-files", "-z"], capture_output=True, text=
         data = open(path, errors="replace").read()
     except OSError:
         continue
-    bad += [f"{path}: contains the value of {k}" for k, v in vals.items() if v in data]
+    bad += sorted({f"{path}: contains the value of {k}" for k, v in vals if v in data})
 if bad:
     print("  " + "\n  ".join(bad[:10])); sys.exit(1)
 PY
