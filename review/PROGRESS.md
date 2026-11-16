@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T6 (improved template), sub-task T6c next.
+Phase: T6 (improved template), sub-task T6d next.
 
 ## Done
 
@@ -55,6 +55,11 @@ Phase: T6 (improved template), sub-task T6c next.
   persistent 429 ended the run after ~22 min; a 529 after a long wait ended the run), each fixed
   with a self-test case. Check (by the lead): self-test PASS (15 legs); removing the retry refill
   makes the self-test stop on `529 overloaded` (rc 1).
+- 2026-11-16: T6c done (Opus agent; commits `3435121`, `3ae0706`). C3 CHECK-WRONG path with a
+  read-only Fable judge; C6 verifier brief with the loop's check output. Independent review FAIL:
+  a claim from a worker that changed nothing was dropped; alerts were silent without
+  `notify-send`. Both fixed. Check (by the lead): self-test PASS; with the fix disabled the
+  self-test blocks M1.T1 after 3 attempts with no judge (rc 1).
 
 ## Waiting on John
 
