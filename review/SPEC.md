@@ -1,6 +1,19 @@
 # SPEC: cost and time review of `autonomous-project-template`
 
-Status: DRAFT. Personas and open questions wait for John's answers.
+Status: answers from John recorded 2026-11-16. Personas wait for John's confirmation.
+
+## Context (John, 2026-11-16)
+
+- Plan: Claude Max. Cost means usage quota and time spent waiting for the limit to reset. The run
+  used almost all Fable usage in a day. Dollar figures are estimates at public API prices.
+- The VM is the DigitalOcean droplet `johns-ubuntu` (4 vCPU, 8 GB RAM), set up in
+  `jcallahanp/linux-droplet-migration`. Claude Code there runs with permission checks bypassed and a
+  guard hook (`setup/droplet/claude/guard.py`). The secrets manager is Bitwarden Secrets Manager
+  through the `secret` helper (`setup/droplet/bin/secret`).
+- Run data: `jcallahanp/opencode-ui` (the 600 MB project; branch `build/opencode-ui`),
+  `jcallahanp/paperclip-cockpit`, `jcallahanp/abliterated-research`.
+- This cloud session cannot reach the droplet. John runs prompts in the Claude Code session in Warp
+  on his Windows laptop, which reaches the droplet over SSH.
 
 ## Goal
 
