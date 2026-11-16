@@ -122,14 +122,16 @@ Blockers and risks found with the inventory (`review/inventory/droplet.md`):
 
 Template changes for the droplet:
 
-- **C10 secrets, scoped.** The loop, not the model, reads secrets: `child_env()` loads only the
-  secret names in the approved spec, through `secret env` when the helper exists, else from `.env`.
-  Each project has two vault tokens with OpenBao policies: a read token for the loop (only that
-  project's keys), and a write-only token (`create`/`update`, no `read`) for keys under the
-  project's `agent/` path. The loop passes only the write-only token to run sessions as
-  `BAO_TOKEN`, so a worker can `secret set` a key it creates (spec: `created_by: agent`) but
-  `secret get` fails. Run sessions keep the `~/.config` read deny. Deploy commands (`wrangler deploy` and the like) are denied in run sessions
-  unless the approved spec lists the deploy. Old-laptop paths leave the deny list.
+- **C10 secrets, scoped per project, read and write** (John, 2026-11-16: agents must create a key
+  in a web dashboard, store it, and wire it into the application). The vault is the only store.
+  Each project has its own OpenBao token that can read and write only that project's keys. The
+  loop loads the project's keys as environment variables for run sessions and checks; the app
+  reads them from the environment. Agents store a key they create with `secret set` and, when the
+  approved spec includes the deploy, push it to the platform (for example
+  `secret get NAME | wrangler secret put NAME`). The project token cannot reach other projects or
+  machine-wide keys (such as John's own deploy tokens). `checks/check_scope.sh` also checks tracked
+  files for the project's vault values. Old-laptop paths leave the deny list. Without the `secret`
+  helper, the template falls back to `.env` as today.
 - **C11 preflight for the droplet:** token expiry, vault reachable, the spec's secrets present,
   heavy desktop processes, and `run.sh` loads `~/.config/claude/oauth.env` when present.
 - **C12 browser for web UIs:** the design leg may add the droplet's browser MCP to
