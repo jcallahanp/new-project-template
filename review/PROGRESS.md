@@ -2,7 +2,7 @@
 
 ## State
 
-Phase: T1 (droplet inventory) waits for John. T2 and T3 can start without it.
+Phase: T1 (droplet inventory) waits for John. T2 runs. T3 done.
 
 ## Done
 
@@ -17,6 +17,12 @@ Phase: T1 (droplet inventory) waits for John. T2 and T3 can start without it.
   the repo copy of `guard.py` shows `bash harness/run.sh` BLOCKED for every project (the guard's
   opencode-ui hold matches any `harness/run.sh`).
 - 2026-11-16: Moved review files into `review/`; the repo root is kept for the improved template.
+
+- 2026-11-16: T3 done (Sonnet agent): `review/analysis/harness-diff.md`. All harness changes in
+  opencode-ui come from commit `feb4339`: frozen acceptance checks skipped in the plan check
+  (`loop.py:518`), tolerant VERDICT/GAP parsing (`loop.py:576,592-593`), plan leg limit 1800 s to
+  2700 s (`loop.py:66`), scout on Sonnet and critic on Opus. Check (by the lead, not the agent):
+  `diff` of `loop.py` and the agent files between template `5c4290e` and `feb4339` shows exactly these.
 
 ## Waiting on John
 
