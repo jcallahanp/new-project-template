@@ -5,6 +5,7 @@
 set -euo pipefail
 src="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+grep -q -- '--template jcallahanp/new-project-template ' "$src/README.md" || { echo "SELFTEST FAIL: README.md does not create projects from jcallahanp/new-project-template"; exit 1; }
 make_repo() {   # $1: a new directory; ends inside it with the template committed on main, the spec approved
 repo="$1"; mkdir -p "$repo/spec" "$repo/plan" "$repo/notes" "$repo/checks/tasks" "$repo/checks/acceptance"
 cp -r "$src/harness" "$src/.claude" "$src/CLAUDE.md" "$src/.gitignore" "$repo/"
@@ -300,8 +301,10 @@ work("M9.T8"); assert mcp not in read("argv-M9.T8.txt"), "an invalid spec/mcp.js
 loop.git("checkout", "--", "spec/mcp.json"); loop.git("reset", "-q", "--hard", "HEAD~1")
 PY
 guard() {   # $1: HARNESS_DEPLOY_BY or "", $2: the command; exit 2 = blocked
-  printf '{"tool_input":{"command":%s}}' "$(jq -Rn --arg c "$2" '$c')" | env -u HARNESS_DEPLOY_BY ${1:+HARNESS_DEPLOY_BY=$1} CLAUDE_PROJECT_DIR="$PWD" bash harness/guard.sh 2>/dev/null
+  printf '{"tool_input":{"command":%s}}' "$(jq -Rn --arg c "$2" '$c')" \
+    | env -u HARNESS_DEPLOY_BY -u SECRET_PROJECT ${1:+HARNESS_DEPLOY_BY=$1} ${SP:+SECRET_PROJECT=$SP} CLAUDE_PROJECT_DIR="$PWD" bash harness/guard.sh 2>"$tmp/guard.err"
 }
+SP=selftest-calc   # the loop sets SECRET_PROJECT only when this project's vault is in use; SP= below is a run without it
 for c in "wrangler deploy" "npx wrangler@3.9 deploy" "npm run deploy" "pnpm publish" "yarn publish" "npx netlify-cli deploy --prod" "cf deploy" \
          "env -u BAO_TOKEN secret --project claude ls" "BAO_TOKEN= secret ls" "unset BAO_TOKEN; secret ls" "env -u SECRET_PROJECT secret ls" \
          "SECRET_PROJECT=claude secret ls" "cat ~/.config/openbao/claude.token" "env -i secret ls" "secret --project=claude ls" \
@@ -309,6 +312,11 @@ for c in "wrangler deploy" "npx wrangler@3.9 deploy" "npm run deploy" "pnpm publ
   if guard "" "$c"; then fail "the guard let '$c' through"; fi
 done
 for c in "secret ls" "printf %s \"\$K\" | secret set NAME -" "npm run build" "wrangler dev" "grep BAO_TOKEN= src" "grep -rn unset src"; do guard "" "$c" || fail "the guard blocked '$c'"; done
+for c in "secret ls" "printf %s \"\$K\" | secret set NAME -" "x=\$(secret get K)" "command secret ls" "FOO=1 secret ls"; do
+  if SP= guard "" "$c"; then fail "the guard let '$c' through without SECRET_PROJECT (it would use John's \`claude\` vault project)"; fi
+done
+grep -q 'John must run `vault-project selftest-calc` once' "$tmp/guard.err" || fail "the guard's message does not name vault-project <slug>: $(cat "$tmp/guard.err")"
+for c in "npx wrangler secret list" "grep -rn secret src" "ls secrets/"; do SP= guard "" "$c" || fail "the guard blocked '$c' without SECRET_PROJECT"; done
 guard agent "npx wrangler@3.9 deploy" || fail "the guard blocked a deploy with HARNESS_DEPLOY_BY=agent"
 guard agent "secret get K | npx wrangler pages secret put K --project-name site" || fail "the guard took wrangler's --project-name for the vault's --project"
 guard agent "secret get K | npx wrangler pages secret put K --project site" || fail "the guard took another tool's \`secret\` subcommand for the vault helper"
@@ -340,5 +348,44 @@ assert not {"BAO_TOKEN", "SECRET_PROJECT"} & set(seen), "the shell's BAO_TOKEN /
 PY
 HOME="$tmp/home-empty" python3 -I harness/spec.py secrets | grep -q "every required secret John supplies is in .env" || fail "(6) spec.py secrets does not read .env"
 rm .env
+# preflight: the helper on PATH and secrets in the spec but no token for this project is a FAIL naming vault-project <slug>;
+# the sign-in probe runs on the work legs' model (Opus, or the loop's overrides), not on Fable
+printf '#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --model ] && echo "$2" >> "%s"; shift; done\necho %s\n' "$tmp/probe.txt" "'{\"is_error\": false}'" > "$tmp/vbin/probe-claude"
+chmod +x "$tmp/vbin/probe-claude"
+env "${vault_env[@]}" HOME="$tmp/home-empty" HARNESS_CLAUDE="$tmp/vbin/probe-claude" bash harness/preflight.sh > "$tmp/pre.txt" 2>&1 && fail "preflight passed without this project's vault token"
+grep -q '^  FAIL  the spec lists secrets .*run `vault-project selftest-calc` once' "$tmp/pre.txt" || fail "preflight: no FAIL naming vault-project selftest-calc: $(cat "$tmp/pre.txt")"
+grep -q '^  ok    a headless session starts and answers (model claude-opus-5-5)' "$tmp/pre.txt" && [ "$(cat "$tmp/probe.txt")" = claude-opus-5-5 ] \
+  || fail "preflight did not probe with the work model claude-opus-5-5: $(cat "$tmp/probe.txt")"
+rm "$tmp/probe.txt"
+env "${vault_env[@]}" HARNESS_MODEL=claude-x-1 HARNESS_CLAUDE="$tmp/vbin/probe-claude" bash harness/preflight.sh > "$tmp/pre.txt" 2>&1 || true
+grep -q 'vault-project' "$tmp/pre.txt" && fail "preflight asks for vault-project although the token file exists: $(cat "$tmp/pre.txt")"
+[ "$(cat "$tmp/probe.txt")" = claude-x-1 ] || fail "preflight's probe ignores HARNESS_MODEL: $(cat "$tmp/probe.txt")"
+# approve: the next step names the store in use; .env.example does not ask John to fill a key the run creates
+env "${vault_env[@]}" python3 -I harness/spec.py approve > "$tmp/appr.txt" 2>&1 || fail "approve: $(cat "$tmp/appr.txt")"
+grep -q 'Next: put secret values in the vault (`secret --project selftest-calc set NAME -`' "$tmp/appr.txt" && ! grep -q '\.env' "$tmp/appr.txt" \
+  || fail "approve with the vault does not say vault: $(cat "$tmp/appr.txt")"
+env "${vault_env[@]}" HOME="$tmp/home-empty" python3 -I harness/spec.py approve > "$tmp/appr.txt" 2>&1 || fail "approve: $(cat "$tmp/appr.txt")"
+grep -q 'Next: run `vault-project selftest-calc` once' "$tmp/appr.txt" || fail "approve without the token does not say vault-project: $(cat "$tmp/appr.txt")"
+HOME="$tmp/home-empty" python3 -I harness/spec.py approve > "$tmp/appr.txt" 2>&1 || fail "approve: $(cat "$tmp/appr.txt")"
+grep -q 'Next: put secret values in .env' "$tmp/appr.txt" || fail "approve without the helper does not say .env: $(cat "$tmp/appr.txt")"
+grep -q '^SC_API_KEY=$' .env.example && grep -q '^# AGENT_KEY=$' .env.example && ! grep -q '^AGENT_KEY=' .env.example \
+  || fail ".env.example asks John for a key the run creates: $(cat .env.example)"
 
-echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback)"
+# Ctrl+C: the running session (own process group) dies with the loop and commits nothing afterwards
+make_repo "$tmp/repo4"
+MOCK_SCENARIO=hang MOCK_STATE="$tmp/mock5" python3 -I -c 'import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+  python3 -I harness/loop.py run --no-push > "$tmp/int.txt" 2>&1 &   # SIG_DFL: a background job of a script starts with SIGINT ignored
+lp=$!
+for _ in $(seq 100); do [ -s "$tmp/mock5/hang.pid" ] && break; sleep 0.1; done
+[ -s "$tmp/mock5/hang.pid" ] || fail "the hanging mock session did not start: $(cat "$tmp/int.txt")"
+kill -INT "$lp"; set +e; wait "$lp"; set -e
+heads=$(git log --all --oneline | wc -l); mp=$(cat "$tmp/mock5/hang.pid")
+alive() { [ -r "/proc/$1/stat" ] && ! grep -q '^[0-9]* (.*) Z' "/proc/$1/stat"; }   # a zombie counts as gone
+for _ in $(seq 20); do alive "$mp" || break; sleep 0.1; done
+alive "$mp" && fail "the session is still running after Ctrl+C on the loop"
+sleep 4    # past the mock's 3 s sleep: a surviving session would have committed by now
+[ "$(git log --all --oneline | wc -l)" = "$heads" ] && ! git log --all --oneline | grep -q 'late commit' \
+  || fail "a commit appeared after the loop stopped: $(git log --all --oneline | head -3)"
+grep -q 'interrupted' "$tmp/int.txt" || fail "the loop did not stop as interrupted: $(cat "$tmp/int.txt")"
+
+echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback; vault-project required; work-model probe; Ctrl+C kills the session)"

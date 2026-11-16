@@ -102,7 +102,9 @@ the run, because later milestones build on it.
   exists, the project's values come from its vault project and sessions get `BAO_TOKEN` and
   `SECRET_PROJECT` for that project only; a secret with `"created_by": "agent"` is stored by the
   session with `secret set`. Otherwise values come from `.env`. On the droplet, `vault-project
-  <project-slug>` creates the token file.
+  <project-slug>` creates the token file; with the helper on PATH and any secret in the spec,
+  preflight fails until it exists, and the guard blocks the helper in a session without
+  `SECRET_PROJECT` (it would fall back to the machine-wide `claude` project).
 - **Deploying**: `deploy.by` in the spec, `john` (default) or `agent`. Only `agent` lets a session run
   deploy and publish commands. The loop reads it from the approved spec committed at the start of the
   leg, not from the working tree.

@@ -161,12 +161,20 @@ judgement: approval is John's.
 
 `created_by` is `john` (he supplies it before the run) or `agent` (a run session creates it, for
 example an API key made in a web dashboard, and stores it). `deploy.by` is `john` unless he wants the
-run to deploy and publish itself (`agent`). If the spec lists secrets John supplies, he puts the values
-in the vault when `secret` is on PATH (first, once per project, he runs `vault-project <project>` to
-create the project's vault area and token; then `secret --project <project> set NAME -`, value on
-stdin), else in
-`.env` himself (a copy of `.env.example` with the values filled in), in his editor, not in this
-conversation. `.env` is git-ignored. Then run
+run to deploy and publish itself (`agent`).
+
+When `secret` is on PATH (the droplet) and the spec lists any secret, John's or agent-created, John
+first runs `vault-project <slug>` once, where `<slug>` is the spec's `project` value made into a slug
+by `harness/spec.py` (lower case, every run of characters other than a-z and 0-9 becomes one `-`, no
+`-` at either end, at most 40 characters: `"My Price Bot"` becomes `my-price-bot`). It creates the
+project's vault area and its token file `~/.config/openbao/<slug>.token`. Without it, preflight fails
+and run sessions may not use the vault (the `secret` helper would fall back to John's machine-wide
+`claude` project). Show him the exact command with the real slug.
+
+If the spec lists secrets John supplies, he puts the values in the vault when `secret` is on PATH
+(`secret --project <slug> set NAME -`, value on stdin), else in `.env` himself (a copy of
+`.env.example` with the values filled in; agent-created names are commented out there), in his
+editor, not in this conversation. `.env` is git-ignored. Then run
 `python3 harness/spec.py secrets` to confirm every required name has a value (it never prints one).
 If a key has to be created first, tell him where; do not start the run with a required secret missing.
 

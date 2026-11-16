@@ -11,7 +11,7 @@ the project's own README; the harness guide stays in `harness/README.md`.
 ## Start a new project
 
 ```bash
-gh repo create my-project --private --template jcallahanp/autonomous-project-template --clone
+gh repo create my-project --private --template jcallahanp/new-project-template --clone
 cd my-project
 claude
 ```

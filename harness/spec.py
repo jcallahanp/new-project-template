@@ -287,16 +287,29 @@ def main():
     if cmd == "render":
         print("wrote spec/REQUIREMENTS.md")
         return
-    lines = ["# Secrets this project needs. Copy to .env and fill in the values. .env is never committed.", ""]
+    lines = ["# Secrets this project needs. Copy to .env and fill in the values. .env is never committed.",
+             "# Lines commented out are created by a run session during the build: leave them out.", ""]
     for x in s["secrets"]:
-        lines += [f"# {x['purpose']}" + ("" if x.get("required", True) else " (optional)"), f"{x['name']}=", ""]
+        if x.get("created_by") == "agent":
+            lines += [f"# {x['purpose']} (created by the run, not by you)", f"# {x['name']}=", ""]
+        else:
+            lines += [f"# {x['purpose']}" + ("" if x.get("required", True) else " (optional)"), f"{x['name']}=", ""]
     (ROOT / ".env.example").write_text("\n".join(lines))
     (ROOT / "spec" / "APPROVED").write_text(json.dumps({
         "sha256": hashlib.sha256(SPECJ.read_bytes()).hexdigest(), "approved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "requirements": len(s["requirements"])}, indent=1) + "\n")
     subprocess.run(["git", "add", "spec", ".env.example"], cwd=ROOT, check=True)
     subprocess.run(["git", "commit", "-q", "-m", f"spec: approved ({len(s['requirements'])} requirements)"], cwd=ROOT, check=False)
-    print(f"approved: {len(s['requirements'])} requirements. Next: put secret values in .env, then `bash harness/run.sh`.")
+    p, john = slug(s), any(x.get("created_by", "john") != "agent" for x in s["secrets"])
+    steps = []
+    if s["secrets"] and not vault(s) and shutil.which("secret"):
+        steps.append(f"run `vault-project {p}` once (this project's vault)")
+    if john and (vault(s) or shutil.which("secret")):
+        steps.append(f"put secret values in the vault (`secret --project {p} set NAME -`, value on stdin)")
+    elif john:
+        steps.append("put secret values in .env (a copy of .env.example)")
+    nxt = ", then ".join(steps + ["`bash harness/run.sh`"])
+    print(f"approved: {len(s['requirements'])} requirements. Next: {nxt}.")
 
 
 if __name__ == "__main__":

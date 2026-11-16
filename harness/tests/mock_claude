@@ -23,7 +23,10 @@ MOCK_SCENARIO=vault: a WORKER writes its arguments to $MOCK_STATE/argv-<task>.tx
 $MOCK_STATE/deploy-<task>.txt, the names (never the values) of the environment variables it sees to
 $MOCK_STATE/env-<task>.txt and the output of `secret ls` to $MOCK_STATE/ls-<task>.txt, then stores a key it
 "created" ($MOCK_AGENT_VALUE) with `secret set AGENT_KEY -`. M9.T9 instead commits the value of SC_API_KEY and removes it in a
-second commit."""
+second commit.
+
+MOCK_SCENARIO=hang: the first session writes its pid to $MOCK_STATE/hang.pid, sleeps 3 s (the self-test sends Ctrl+C
+to the loop meanwhile), then commits late.txt: if that commit appears, the session outlived the loop."""
 import json, os, re, subprocess, sys
 from pathlib import Path
 
@@ -71,6 +74,11 @@ with open(state / "calls", "a") as f:
     f.write(f"{kind} {model} {effort} {tid}\n")
 if kind in ("WORKER", "VERIFIER"):
     (state / f"{kind}-{tid}-{count(f'brief-{kind}-{tid}')}.txt").write_text(prompt)
+if scenario == "hang":
+    (state / "hang.pid").write_text(str(os.getpid()))
+    import time; time.sleep(3)
+    write("late.txt", "written after the loop stopped\n"); commit("late commit from a session the loop left running")
+    out("done")
 if scenario == "vault" and kind == "WORKER" and tid == "M9.T9":            # commits a key, then removes it: still in the history
     write("app.cfg", f"key = {os.environ['SC_API_KEY']}\n"); commit(f"{tid}: config")
     os.remove("app.cfg"); commit(f"{tid}: remove the key again")

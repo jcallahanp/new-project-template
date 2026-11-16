@@ -324,7 +324,13 @@ def run_claude(kind, prompt, model, effort):
     try:
         out, err = proc.communicate(prompt)
     finally:
+        # Also on Ctrl+C or any error: the session runs in its own process group, so nothing else stops it, and a
+        # session left running would keep committing to the build branch after the loop has stopped.
         dog.cancel()
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
     secs = int(time.time() - t0)
     base = {"ok": False, "text": "", "turns": 0, "secs": secs, "denials": [], "err": None, "kind": kind, "model": model,
             "effort": effort or None, "fallback": False, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,

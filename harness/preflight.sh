@@ -32,6 +32,15 @@ while read -r level msg; do
   case "$level" in ok) ok "$msg" ;; note) note "$msg" ;; "") ;; *) bad "$level $msg" ;; esac
 done <<<"$out"
 [ "$src" = 0 ] || rc=1
+# With the vault helper on PATH but no token for this project, the helper falls back to John's machine-wide `claude`
+# project: a session's `secret set` would land there. The loop sets SECRET_PROJECT only from this project's token file.
+if command -v secret >/dev/null 2>&1; then
+  read -r slug nsec < <(python3 -I -c 'import sys; sys.path.insert(0, "harness"); import spec; s = spec.load()
+print(spec.slug(s), len(s.get("secrets") or []))' 2>/dev/null)
+  if [ "${nsec:-0}" -gt 0 ] && [ ! -f "$HOME/.config/openbao/$slug.token" ]; then
+    bad "the spec lists secrets and the vault helper is on PATH, but this project has no vault token (~/.config/openbao/$slug.token): run \`vault-project $slug\` once, then store the values with \`secret --project $slug set NAME -\` (value on stdin)"
+  fi
+fi
 if git ls-files --error-unmatch .env >/dev/null 2>&1; then bad ".env is tracked by git: git rm --cached .env"; fi
 git check-ignore -q .env && ok ".env is git-ignored" || bad ".env is not git-ignored: add it to .gitignore"
 
@@ -45,11 +54,15 @@ echo "== gates =="
 if bash checks/run_gates.sh >/dev/null 2>&1; then ok "checks/run_gates.sh passes"; else bad "gates fail before the run: bash checks/run_gates.sh"; fi
 
 echo "== claude =="
+# Probe with the work legs' model (most legs run on it), with the same overrides as loop.py: a usage limit on another
+# model does not stop the run (the loop falls back), so it must not stop the start either.
+probe_model=$(python3 -I -c 'import sys; sys.path.insert(0, "harness"); import loop; print(loop.model_for("work"))' 2>/dev/null) \
+  || probe_model="${HARNESS_MODEL_WORK:-${HARNESS_MODEL:-claude-opus-5-5}}"
 if [ "${HARNESS_SKIP_CLAUDE_PROBE:-0}" = 1 ]; then note "sign-in probe skipped"
 elif out=$(timeout 120 "$CLAUDE" -p --settings harness/run-settings.json --strict-mcp-config --mcp-config harness/mcp.json \
-      --output-format json --max-turns 2 --model "${HARNESS_MODEL:-claude-fable-5-2}" "Reply with the single word: ready" </dev/null 2>&1) \
+      --output-format json --max-turns 2 --model "$probe_model" "Reply with the single word: ready" </dev/null 2>&1) \
      && [ "$(printf '%s\n' "$out" | grep '^{' | tail -1 | jq -r '.is_error' 2>/dev/null)" = "false" ]; then
-  ok "a headless session starts and answers (model ${HARNESS_MODEL:-claude-fable-5-2})"
+  ok "a headless session starts and answers (model $probe_model)"
   exp=$(printf '%s\n' "$out" | grep '^{' | tail -1 | jq -r '.credential_expires_at // empty' 2>/dev/null)
   left=$(python3 -I -c '
 import sys, time, datetime as d

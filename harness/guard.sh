@@ -40,6 +40,12 @@ grep -Eq "${helper}([[:space:]]+[^|;&[:space:]]+)*[[:space:]]+--project([[:space
   && block "the vault is used through this project's own BAO_TOKEN and SECRET_PROJECT only: no --project, no changing or unsetting them, no token files."
 grep -Eq '(^|[^[:alnum:]_.-])env[[:space:]]+(-[a-zA-Z]*i|--ignore-environment|-([[:space:]]|$))' <<<"$cmd" && grep -Eq '(^|[^[:alnum:]_.-])secret([[:space:]]|$)' <<<"$cmd" \
   && block "running the vault helper with an emptied environment would use another project's token."
+# Without SECRET_PROJECT (the loop sets it only when this project's vault is in use) the helper falls back to John's
+# machine-wide `claude` project.
+if [ -z "${SECRET_PROJECT:-}" ] && grep -Eq "${helper}([[:space:]|;&)\`]|\$)" <<<"$cmd"; then
+  slug=$(python3 -I -c 'import sys; sys.path.insert(0, sys.argv[1] + "/harness"); import spec; print(spec.slug(spec.load()))' "$root" 2>/dev/null)
+  block "this project has no vault in use (SECRET_PROJECT is not set), so the \`secret\` helper would read and write John's machine-wide \`claude\` project. Do not run it. Stop and say in your final message: John must run \`vault-project ${slug:-<project slug>}\` once, then start the run again."
+fi
 
 # History rewrites and leaving the run branch.
 grep -Eq 'git[[:space:]]+(-[^|;&]*[[:space:]]+)?(rebase|filter-branch|filter-repo|reflog[[:space:]]+expire|update-ref[[:space:]]+-d)' <<<"$cmd" \
