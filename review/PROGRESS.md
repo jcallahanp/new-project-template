@@ -79,10 +79,15 @@ Phase: T6 (improved template), sub-task T6f next.
   with vault values and unpushed history (a leaking work leg is discarded), C11 preflight and token
   file, C12 `spec/mcp.json`. Independent review: FAIL (8), FAIL (2), then fixed. Check (by the
   lead): self-test PASS; guard table of 10 vault and deploy commands behaves as intended.
+- 2026-11-16: T7 vault step done by John in Warp (commit `ec58737`). Fixed a sealed vault
+  (auto-unseal ran without permission); `vault-project <name>` creates a KV mount, a policy and a
+  periodic 30-day token per project. Check (by the lead): inventory section 14: round trip
+  matches; the test token gets 403 on the `claude` mount. Open: no token renewal yet
+  (`review/prompts/droplet-renew.md`).
 
 ## Waiting on John
 
-Run `review/prompts/droplet-vault.md` in Warp (T7 vault step).
+Run `review/prompts/droplet-renew.md` in Warp (T7 token renewal; tokens expire 2026-12-16).
 
 ## Next
 
