@@ -23,14 +23,24 @@ gets a short brief, does one job, and exits. This script checks the result itsel
              milestone. PASS writes DELIVERY.md, pushes the branch and opens a pull request.
 
 A failed task is retried with the failure text (MAX_ATTEMPTS), then `blocked`. Provider errors
-(5xx, timeouts, overload) are retried with a pause and never count against a task; a usage limit is
-waited out. Every stop prints the reason and what is needed, and is written to .harness-run/last-stop.txt.
+(5xx, timeouts, overload) are retried with a pause and never count against a task. A usage limit on a
+work or verify leg (judged by scripts) runs that leg at once on the other model; any other usage limit
+is waited out. Every stop prints the reason and what is needed, and is written to .harness-run/last-stop.txt.
+Each leg's model, effort, tokens and cost estimate go into PROGRESS.md and the card's `legs` list.
 
 Exit code: 0 = delivered, 3 = stopped early (reason printed), 2 = cannot start.
 
-Env: HARNESS_CLAUDE (default `claude`), HARNESS_MODEL (default claude-fable-5-2), HARNESS_EFFORT (default
-high; empty to omit), HARNESS_LIMIT_HOURS (how long to wait out a usage limit, default 8),
-HARNESS_RETRY_WAITS (comma-separated seconds between retries of a provider error).
+Env: HARNESS_CLAUDE (default `claude`).
+  Model per leg kind (KIND = DESIGN, PLAN, WORK, VERIFY, AUDIT): HARNESS_MODEL_<KIND>, else HARNESS_MODEL,
+  else the default: claude-fable-5-2 for design, plan and audit; claude-opus-5-5 for work and verify.
+  A work leg for a task that already failed (attempt 2+) uses HARNESS_ESCALATE_MODEL (default
+  claude-fable-5-2) unless HARNESS_MODEL_WORK is set.
+  Effort per kind: HARNESS_EFFORT_<KIND>, else HARNESS_EFFORT, else high; an empty value omits --effort.
+  HARNESS_FALLBACK_MODEL: model a work or verify leg switches to on a usage limit (default: the other of
+  claude-fable-5-2 / claude-opus-5-5).
+  HARNESS_LIMIT_HOURS (how long to wait out a usage limit, default 8), HARNESS_LIMIT_POLL (seconds
+  between tries while it lasts, default 900), HARNESS_RETRY_WAITS (comma-separated seconds between
+  retries of a provider error).
 """
 import argparse
 import fcntl
@@ -50,8 +60,9 @@ ROOT = Path(__file__).resolve().parent.parent
 H = ROOT / "harness"
 RUN = ROOT / ".harness-run"                      # git-ignored runtime files (log, lock, last stop)
 CLAUDE = os.environ.get("HARNESS_CLAUDE") or "claude"
-MODEL = os.environ.get("HARNESS_MODEL", "claude-fable-5-2")
-EFFORT = os.environ.get("HARNESS_EFFORT", "high")
+FABLE, OPUS = "claude-fable-5-2", "claude-opus-5-5"
+KIND_MODEL = {"design": FABLE, "plan": FABLE, "audit": FABLE, "work": OPUS, "verify": OPUS}
+FALLBACK_KINDS = ("work", "verify")              # legs a script judges: on a usage limit they switch model
 LIMIT_HOURS = float(os.environ.get("HARNESS_LIMIT_HOURS", "8"))
 LEDGER, PROGRESS = ROOT / "ledger.jsonl", ROOT / "PROGRESS.md"
 SPECJ, APPROVED = ROOT / "spec" / "requirements.json", ROOT / "spec" / "APPROVED"
@@ -172,10 +183,22 @@ def kids(cards, mid):
     return [c for c in cards if c.get("kind") == "task" and c.get("parent") == mid]
 
 
-def log_progress(card_id, action, check, nxt):
+LEG_FIELDS = ("kind", "model", "effort", "fallback", "secs", "turns", "input", "output", "cache_read", "cache_write", "cost_usd", "models")
+
+
+def usage_line(legs):
+    """One compact line per PROGRESS.md entry; cost is Claude Code's estimate at API list prices."""
+    return "; ".join(f"{g['kind']} {g['model']}" + (" (fallback after a usage limit)" if g["fallback"] else "")
+                     + f" effort {g['effort'] or '-'}: in {g['input']}, out {g['output']}, cache read {g['cache_read']}, "
+                     f"cache write {g['cache_write']} tokens, " + ("cost n/a" if g["cost_usd"] is None else f"~${g['cost_usd']:.2f}")
+                     for g in legs) + " (cost: estimate at API list prices)"
+
+
+def log_progress(card_id, action, check, nxt, legs=()):
     head = git("rev-parse", "--short", "HEAD", check=False) or "none"
     with open(PROGRESS, "a") as f:
-        f.write(f"\n## {utc()} · {card_id}\n- action: {action}\n- check: {check}\n- commit: {head}\n- next: {nxt}\n")
+        f.write(f"\n## {utc()} · {card_id}\n- action: {action}\n- check: {check}\n- commit: {head}\n- next: {nxt}\n"
+                + (f"- usage: {usage_line(legs)}\n" if legs else ""))
 
 
 def commit_state(msg):
@@ -184,20 +207,51 @@ def commit_state(msg):
         git("commit", "-q", "-m", msg[:100])
 
 
-def record(cards, card_id, action, check, nxt, msg):
+def record(cards, card_id, action, check, nxt, msg, runs=()):
+    """Save the ledger, log to PROGRESS.md, commit. `runs`: the run_claude results of the legs this entry is about."""
+    legs = [{"at": utc(), **{k: r[k] for k in LEG_FIELDS}} for r in runs if r]
+    if legs:
+        by_id(cards)[card_id].setdefault("legs", []).extend(legs)
     save(cards)
-    log_progress(card_id, action, check, nxt)
+    log_progress(card_id, action, check, nxt, legs)
     commit_state(msg)
 
 
 # ---------- one model session ----------
-def run_claude(kind, prompt):
-    """One fresh session. Returns {ok, text, turns, secs, denials, err} where err is None or
-    'transient' | 'limit' | 'auth' | 'timeout' | 'other'."""
+def model_for(kind, attempt=1):
+    """HARNESS_MODEL_<KIND>, else HARNESS_MODEL, else the kind's default. A retried work task escalates."""
+    if kind == "work" and attempt > 1 and not os.environ.get("HARNESS_MODEL_WORK"):
+        return os.environ.get("HARNESS_ESCALATE_MODEL") or FABLE
+    return os.environ.get(f"HARNESS_MODEL_{kind.upper()}") or os.environ.get("HARNESS_MODEL") or KIND_MODEL[kind]
+
+
+def effort_for(kind):
+    """HARNESS_EFFORT_<KIND>, else HARNESS_EFFORT, else high. A set but empty value means: no --effort."""
+    for k in (f"HARNESS_EFFORT_{kind.upper()}", "HARNESS_EFFORT"):
+        if k in os.environ:
+            return os.environ[k]
+    return "high"
+
+
+def fallback_model(model):
+    return os.environ.get("HARNESS_FALLBACK_MODEL") or (OPUS if model == FABLE else FABLE)
+
+
+def num(x, cast=int):
+    try:
+        return cast(x or 0)
+    except (TypeError, ValueError):
+        return cast(0)
+
+
+def run_claude(kind, prompt, model, effort):
+    """One fresh session. Returns {ok, text, turns, secs, denials, err, kind, model, effort, fallback, input,
+    output, cache_read, cache_write, cost_usd, models} where err is None or
+    'transient' | 'limit' | 'auth' | 'timeout' | 'other'. cost_usd is Claude Code's estimate at API list prices."""
     cmd = [CLAUDE, "-p", "--settings", str(H / "run-settings.json"), "--strict-mcp-config", "--mcp-config", str(H / "mcp.json"),
-           "--output-format", "json", "--max-turns", LEG_TURNS[kind], "--model", MODEL]
-    if EFFORT:
-        cmd += ["--effort", EFFORT]
+           "--output-format", "json", "--max-turns", LEG_TURNS[kind], "--model", model]
+    if effort:
+        cmd += ["--effort", effort]
     if kind in ("verify", "audit"):
         cmd += ["--disallowed-tools", "Edit", "Write", "NotebookEdit"]
     t0 = time.time()
@@ -219,7 +273,9 @@ def run_claude(kind, prompt):
     finally:
         dog.cancel()
     secs = int(time.time() - t0)
-    base = {"ok": False, "text": "", "turns": 0, "secs": secs, "denials": [], "err": None}
+    base = {"ok": False, "text": "", "turns": 0, "secs": secs, "denials": [], "err": None, "kind": kind, "model": model,
+            "effort": effort or None, "fallback": False, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+            "cost_usd": None, "models": []}
     if timed_out:
         return {**base, "err": "timeout", "text": f"the session was stopped at its {LEG_SECONDS[kind] // 60}-minute limit: "
                 "the step is too big or it got stuck. Do less in one step."}
@@ -236,7 +292,13 @@ def run_claude(kind, prompt):
     text = str(res.get("result") or "")
     denials = sorted({str(d.get("tool_name", "?")) + (": " + json.dumps(d.get("tool_input"))[:120] if d.get("tool_input") else "")
                       for d in res.get("permission_denials") or [] if isinstance(d, dict)})
-    base.update(text=text, turns=res.get("num_turns", 0), denials=denials)
+    u = res.get("usage") if isinstance(res.get("usage"), dict) else {}
+    cost = res.get("total_cost_usd")
+    base.update(text=text, turns=res.get("num_turns", 0), denials=denials, input=num(u.get("input_tokens")),
+                output=num(u.get("output_tokens")), cache_read=num(u.get("cache_read_input_tokens")),
+                cache_write=num(u.get("cache_creation_input_tokens")),
+                cost_usd=None if cost is None else round(num(cost, float), 4),
+                models=sorted(res["modelUsage"]) if isinstance(res.get("modelUsage"), dict) else [])
     if res.get("is_error") and res.get("subtype") != "error_max_turns":
         return {**base, "text": text or str(res.get("subtype")), "err": classify(text or str(res.get("subtype")))}
     return {**base, "ok": True}
@@ -252,12 +314,17 @@ def classify(text):
     return "other"
 
 
-def session(kind, prompt, start):
-    """run_claude with patience: provider errors are retried from a clean tree, a usage limit is waited out.
+def session(kind, prompt, start, attempt=1):
+    """run_claude with patience: provider errors are retried from a clean tree. A usage limit on a work or
+    verify leg runs it at once on the other model; when that is limited too (or for other kinds), the
+    limit is waited out, and each try after a wait starts again on the leg's own model.
     Raises Stop for errors only John can fix."""
     waits, limit_until = list(RETRY_WAITS), None
+    own = model = model_for(kind, attempt)
+    effort, tried = effort_for(kind), set()
     while True:
-        r = run_claude(kind, prompt)
+        r = run_claude(kind, prompt, model, effort)
+        r["fallback"] = model != own
         if r["err"] in (None, "timeout"):
             return r
         git("reset", "-q", "--hard", start)                # a failed session leaves nothing behind
@@ -266,10 +333,17 @@ def session(kind, prompt, start):
         if r["err"] == "auth":
             raise Stop(f"Claude sign-in failed ({first}). Run `claude` once in a terminal and sign in, then start the run again.")
         if r["err"] == "limit":
+            tried.add(model)
+            alt = fallback_model(model)
+            if kind in FALLBACK_KINDS and alt not in tried:
+                say(f"  usage limit on {model}: running this {kind} leg on {alt} instead ({first})")
+                model = alt
+                continue
             limit_until = limit_until or time.time() + LIMIT_HOURS * 3600
             if time.time() > limit_until:
                 raise Stop(f"the usage limit did not clear within {LIMIT_HOURS:g} h ({first}). Start the run again later; it resumes where it stopped.")
             pause(LIMIT_POLL, f"usage limit ({first})")
+            model, tried = own, set()
             continue
         if r["err"] == "transient" and waits:
             pause(waits.pop(0), f"provider error, will retry ({first})")
@@ -542,7 +616,7 @@ def work_leg(card, branch):
         "work", TASK_ID=card["id"], TITLE=card["title"], ACCEPTANCE=card["acceptance"], CHECK=card["check"],
         REQS=", ".join(card.get("requirements") or []) or "none directly (enabling work)",
         FILES="\n".join(f"- {f}" for f in card.get("files", [])), ATTEMPT=card.get("attempts", 0) + 1,
-        FEEDBACK=card.get("note") or "none (first attempt)"), start)
+        FEEDBACK=card.get("note") or "none (first attempt)"), start, attempt=card.get("attempts", 0) + 1)
     bad, kept = seal(start, branch, f"work({card['id']}): {card['title']}", forbidden=WORK_FORBIDDEN)
     if not r["ok"]:
         return False, r["text"], r, start
@@ -657,12 +731,31 @@ def summary(cards):
     return "\n".join(lines) or "nothing in the ledger yet (the run has not started)"
 
 
+def usage_summary(cards):
+    """Per leg kind and model: legs, output tokens, cost estimate."""
+    tot = {}
+    for g in (g for c in cards for g in c.get("legs") or []):
+        t = tot.setdefault((g.get("kind", "?"), g.get("model", "?")), [0, 0, None])
+        t[0] += 1
+        t[1] += g.get("output") or 0
+        t[2] = t[2] if g.get("cost_usd") is None else (t[2] or 0) + g["cost_usd"]
+    if not tot:
+        return ""
+    order = list(LEG_SECONDS)
+    rows = [f"  {k:<7} {m:<18} {n:>4} legs  {o:>11,} output tokens  " + ("cost n/a" if c is None else f"~${c:,.2f}")
+            for (k, m), (n, o, c) in sorted(tot.items(), key=lambda x: (order.index(x[0][0]) if x[0][0] in order else 99, x[0][1]))]
+    return "\nusage per leg kind and model (cost: estimate at API list prices):\n" + "\n".join(rows)
+
+
 def cmd_status(_):
     p = spec_problem()
-    print(("spec: approved" if not p else f"spec: {p}") + "\n" + summary(load()))
+    cards = load()
+    print(("spec: approved" if not p else f"spec: {p}") + "\n" + summary(cards))
     last = RUN / "last-stop.txt"
     if last.is_file():
         print("\nlast stop: " + last.read_text().strip())
+    if usage_summary(cards):
+        print(usage_summary(cards))
 
 
 def finish(why, legs, code):
@@ -730,7 +823,7 @@ def cmd_run(a):
                     d["note"] = msg[:2000]
                     d["state"] = "blocked" if d["attempts"] >= MAX_ATTEMPTS else "todo"
                 record(cards, "DESIGN", f"design leg ({r['turns']} turns, {r['secs']}s): {msg.splitlines()[0][:200]}", "design validation -> " + ("pass" if ok else "fail"),
-                       "plan the first milestone" if ok else "redo the design with the rejection reasons", "chore(DESIGN): " + ("accepted" if ok else "rejected"))
+                       "plan the first milestone" if ok else "redo the design with the rejection reasons", "chore(DESIGN): " + ("accepted" if ok else "rejected"), [r])
                 say(f"  -> {'accepted' if ok else 'rejected'}: {' '.join(msg.split())[:220]}")
                 continue
 
@@ -766,7 +859,7 @@ def cmd_run(a):
                             m["state"] = "blocked"
                     record(cards, mid, f"plan leg ({r['turns']} turns, {r['secs']}s): {msg.splitlines()[0][:200]}", "plan validation -> " + ("pass" if ok else "fail"),
                            "work the first task" if ok else ("blocked: needs John" if m["state"] == "blocked" else "re-plan with the rejection reasons"),
-                           f"chore({mid}): plan " + ("accepted" if ok else "rejected"))
+                           f"chore({mid}): plan " + ("accepted" if ok else "rejected"), [r])
                     say(f"  -> {'accepted' if ok else 'rejected'}: {' '.join(msg.split())[:220]}")
                     continue
                 task = next((k for k in open_ks if all(ids[x]["state"] == "done" for x in k.get("depends_on", []))), None)
@@ -793,7 +886,7 @@ def cmd_run(a):
                     record(cards, tid, f"work leg ({r['turns']} turns, {r['secs']}s)" + (f" + verify leg ({vr['turns']} turns, {vr['secs']}s)" if vr else "") + f": {msg.splitlines()[0][:200]}",
                            f"{task['check']} + checks/run_gates.sh + independent verify -> " + ("pass" if ok else f"fail at {stage}"),
                            "next eligible task" if ok else ("blocked after 3 attempts" if task["state"] == "blocked" else "retry with this failure as feedback"),
-                           f"chore({tid}): " + ("done" if ok else task["state"]))
+                           f"chore({tid}): " + ("done" if ok else task["state"]), [r, vr])
                     say(f"  -> {'DONE' if ok else task['state'].upper()}: {' '.join(msg.split())[:220]}")
                     continue
                 if any(k["state"] == "blocked" for k in ks):
@@ -848,7 +941,7 @@ def cmd_run(a):
             if verdict:
                 streak = 0
                 au.update(state="done", note="independent audit: PASS")
-                record(cards, "AUDIT", f"audit leg ({r['turns']} turns, {r['secs']}s): PASS", "all acceptance + gates + independent audit -> pass", "deliver", "chore(AUDIT): pass")
+                record(cards, "AUDIT", f"audit leg ({r['turns']} turns, {r['secs']}s): PASS", "all acceptance + gates + independent audit -> pass", "deliver", "chore(AUDIT): pass", [r])
                 say("  -> PASS")
                 continue
             streak += 1
@@ -860,7 +953,7 @@ def cmd_run(a):
                 nxt = f"plan {m['id']}"
             else:
                 nxt = "audit again"
-            record(cards, "AUDIT", f"audit leg ({r['turns']} turns, {r['secs']}s): FAIL — {au['note'][:200]}", "independent audit -> fail", nxt, "chore(AUDIT): gaps")
+            record(cards, "AUDIT", f"audit leg ({r['turns']} turns, {r['secs']}s): FAIL — {au['note'][:200]}", "independent audit -> fail", nxt, "chore(AUDIT): gaps", [r])
             say(f"  -> FAIL: {' '.join(au['note'].split())[:220]}")
     except Stop as e:
         finish(str(e), legs, 3)

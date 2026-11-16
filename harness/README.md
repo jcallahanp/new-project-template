@@ -66,8 +66,10 @@ the run, because later milestones build on it.
   your personal connectors (mail, calendar, CRM). For a web UI, add the Playwright server so
   sessions can drive a real browser:
   `{"mcpServers": {"playwright": {"command": "npx", "args": ["-y", "@playwright/mcp@0.0.83", "--headless"]}}}`
-- **Budgets and model**: `--max-hours`, `--max-legs` on `harness/run.sh`; `HARNESS_MODEL`,
-  `HARNESS_EFFORT`; the limits at the top of `harness/loop.py`.
+- **Budgets and model**: `--max-hours`, `--max-legs` on `harness/run.sh`; the model and effort per leg
+  kind (`HARNESS_MODEL_<KIND>`, `HARNESS_EFFORT_<KIND>`, or `HARNESS_MODEL`/`HARNESS_EFFORT` for all;
+  see the docstring of `harness/loop.py`); the limits at the top of `harness/loop.py`.
+  `python3 harness/loop.py status` ends with tokens and a cost estimate per leg kind and model.
 - **Rules every session follows**: `CLAUDE.md`.
 
 ## Limits worth knowing
