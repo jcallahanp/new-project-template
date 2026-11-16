@@ -9,9 +9,6 @@ sessions" below. Nobody is watching and nobody can answer questions.
 
 **B. Anything else: you are talking with John in a terminal.** Do this:
 
-0. If `review/PROGRESS.md` exists, this is the template's own development repo, not a project:
-   follow `review/PROGRESS.md` and `review/PLAN.md`, and do not run `/intake`.
-
 1. Run `python3 harness/loop.py status`.
 2. If the spec is not approved: this is a new project. Use the `intake` skill (`/intake`) and follow
    it exactly. Do not write product code, a design or a plan yourself, however clear the request

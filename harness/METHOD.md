@@ -58,7 +58,7 @@ What this harness borrows, and from where. Collected 2026-11-13.
 
 ## Changes from the 2026-11 review
 
-The review of the `opencode-ui` run and the droplet is in `review/FINDINGS.md`. Changes C1 to C12:
+The review of the `opencode-ui` run and the droplet is in `review/FINDINGS.md` on branch `claude/awesome-darwin-di1t8o` of github.com/jcallahanp/new-project-template. Changes C1 to C12:
 
 - **C1** Model per step: Fable for design, plan, judge and audit, Opus 5.5 for work and verify, Fable for retries. Work and verify were most of the leg time and each is script-checked.
 - **C2** On a usage limit, a work or verify leg runs on the other model instead of waiting; the run lost time to limit waits.
