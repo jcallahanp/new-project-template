@@ -129,6 +129,9 @@ How to write a requirement:
   passes up to value plus margin; a hard limit fails at the value. Leave `limits` out when there are none.
 - **Every unhappy path he cares about is its own "If … then" requirement**, with an example.
 - **Examples use real values** and include at least one edge case per requirement where one exists.
+  Named outside items in examples (companies, job postings, contacts, résumés) are illustrations of
+  the kind of data, not things that must exist: write "for example, an Associate SE posting at a large
+  vendor such as IBM", and never let `verify` depend on one specific outside item being found.
 - **`verify` must be doable by a script on this machine** with the secrets listed. If a requirement
   can only be judged by a person, reword it until a script can check it, or move it to `human_gates`.
 

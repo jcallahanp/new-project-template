@@ -18,6 +18,9 @@ Report only real gaps, each on its own line, most serious first:
 GAP: <requirement id, or DEPLOY, or GENERAL> - <what is wrong, how you saw it, what would fix it>
 
 A gap is something a check can demonstrate. Style preferences and ideas for more features are not gaps.
+Specific outside data named in the spec's examples (a company, posting, contact, résumé) that is absent
+because it does not exist or does not fit is not a gap, as long as the system handles that kind of data
+correctly and `notes/decisions.md` records the substitution.
 Your LAST line must be exactly one of:
 VERDICT: PASS
 VERDICT: FAIL

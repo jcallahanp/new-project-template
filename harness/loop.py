@@ -3,6 +3,7 @@
 
   loop.py run [--max-legs 400] [--max-hours 24] [--no-push]   run until delivered, blocked, or out of budget
   loop.py status                                              one-screen summary of the ledger
+  loop.py unblock <id> [--note TEXT] [--acceptance TEXT]       put a blocked task back to todo (and its milestone)
 
 Nothing lives in a session's memory. Each numbered thing below is one "leg": a brand-new session that
 gets a short brief, does one job, and exits. This script checks the result itself and records it.
@@ -25,8 +26,11 @@ gets a short brief, does one job, and exits. This script checks the result itsel
 
 A failed task is retried with the failure text (MAX_ATTEMPTS), then `blocked`. From attempt 2 on, a worker
 whose check fails may end with `CHECK-WRONG: <reason>`; a read-only JUDGE leg then decides. If it agrees,
-the task is blocked at once and John is notified (the run goes on with other tasks); if not, the judge's
-reason is the feedback for the next attempt. Provider errors
+a REPAIR leg fixes the check itself (only that task's check and its requirements' acceptance checks), logs
+the decision in notes/decisions.md, and the task starts again: the run does not stop. Only when the judge
+says NEEDS-JOHN (a major architectural decision, a payment, or access the run cannot get) is the task
+blocked and John notified. If the judge disagrees, its reason is the feedback for the next attempt.
+John-only stops are listed in CLAUDE.md ("What needs John"). Provider errors
 (5xx, timeouts, overload, a short 429 rate limit) are retried on the same model with a pause and never
 count against a task; a rate limit that outlasts those pauses counts as a usage limit. A usage limit on a
 work or verify leg (judged by scripts) runs that leg at once on the other model; any other usage limit
@@ -36,8 +40,9 @@ Each leg's model, effort, tokens and cost estimate go into PROGRESS.md and the c
 Exit code: 0 = delivered, 3 = stopped early (reason printed), 2 = cannot start.
 
 Env: HARNESS_CLAUDE (default `claude`).
-  Model per leg kind (KIND = DESIGN, PLAN, WORK, VERIFY, JUDGE, AUDIT): HARNESS_MODEL_<KIND>, else HARNESS_MODEL,
-  else the default: claude-fable-5-2 for design, plan, judge and audit; claude-opus-5-5 for work and verify.
+  Model per leg kind (KIND = DESIGN, PLAN, WORK, VERIFY, JUDGE, REPAIR, AUDIT): HARNESS_MODEL_<KIND>, else
+  HARNESS_MODEL, else the default: claude-fable-5-2 for design, plan, judge and audit; claude-opus-5-5 for
+  work and verify. A repair leg uses the plan leg's model and effort unless HARNESS_*_REPAIR is set.
   A work leg for a task that already failed (attempt 2+) uses HARNESS_ESCALATE_MODEL (default
   claude-fable-5-2) unless HARNESS_MODEL_WORK is set.
   Effort per kind: HARNESS_EFFORT_<KIND>, else HARNESS_EFFORT, else high; an empty value omits --effort.
@@ -68,21 +73,23 @@ import spec as speclib                           # noqa: E402  (harness/spec.py:
 RUN = ROOT / ".harness-run"                      # git-ignored runtime files (log, lock, last stop)
 CLAUDE = os.environ.get("HARNESS_CLAUDE") or "claude"
 FABLE, OPUS = "claude-fable-5-2", "claude-opus-5-5"
-KIND_MODEL = {"design": FABLE, "plan": FABLE, "audit": FABLE, "work": OPUS, "verify": OPUS, "judge": FABLE}
-FALLBACK_KINDS = ("work", "verify")              # legs a script judges: on a usage limit they switch model
+KIND_MODEL = {"design": FABLE, "plan": FABLE, "audit": FABLE, "work": OPUS, "verify": OPUS, "judge": FABLE, "repair": FABLE}
+FALLBACK_KINDS = ("work", "verify", "repair")    # on a usage limit they switch model (a repair is re-tested by work + verify)
 LIMIT_HOURS = float(os.environ.get("HARNESS_LIMIT_HOURS", "8"))
 LEDGER, PROGRESS = ROOT / "ledger.jsonl", ROOT / "PROGRESS.md"
 SPECJ, APPROVED = ROOT / "spec" / "requirements.json", ROOT / "spec" / "APPROVED"
 MILESTONES = ROOT / "plan" / "milestones.json"
 
 MAX_ATTEMPTS = 3            # tries per task / plan / design before it is blocked
+MAX_REPAIRS = 2             # times the run may fix one task's check itself (judge agreed it was wrong)
 MAX_ROUNDS = 3              # planning rounds per milestone (round 2+ = acceptance checks still failing)
 MAX_AUDITS = 3              # audits per run; each failed audit adds one fix milestone
 FAIL_STREAK = 5             # legs in a row without progress before the loop gives up
 MAX_TASKS = 12              # per planning round (fewer, larger tasks: each session pays a fixed start-up)
 MAX_MILESTONES = 12
-LEG_SECONDS = {"design": 2400, "plan": 2700, "work": 2700, "verify": 900, "judge": 900, "audit": 2400}
-LEG_TURNS = {"design": "100", "plan": "100", "work": "200", "verify": "50", "judge": "50", "audit": "100"}
+LEG_SECONDS = {"design": 2400, "plan": 2700, "work": 2700, "verify": 900, "judge": 900, "repair": 1800, "audit": 2400}
+LEG_TURNS = {"design": "100", "plan": "100", "work": "200", "verify": "50", "judge": "50", "repair": "80", "audit": "100"}
+DECISIONS = "notes/decisions.md"                 # choices the run made without John (shown in DELIVERY.md)
 RETRY_WAITS = [int(x) for x in os.environ.get("HARNESS_RETRY_WAITS", "30,120,300,900").split(",")]   # pauses before retrying a provider error
 LIMIT_POLL = int(os.environ.get("HARNESS_LIMIT_POLL", "900"))                       # seconds between tries while a usage limit is active
 
@@ -269,12 +276,15 @@ def model_for(kind, attempt=1):
     """HARNESS_MODEL_<KIND>, else HARNESS_MODEL, else the kind's default. A retried work task escalates."""
     if kind == "work" and attempt > 1 and not os.environ.get("HARNESS_MODEL_WORK"):
         return os.environ.get("HARNESS_ESCALATE_MODEL") or FABLE
+    if kind == "repair" and not os.environ.get("HARNESS_MODEL_REPAIR"):
+        kind = "plan"                                # a repair rewrites a check: the planner's model
     return os.environ.get(f"HARNESS_MODEL_{kind.upper()}") or os.environ.get("HARNESS_MODEL") or KIND_MODEL[kind]
 
 
 def effort_for(kind):
     """HARNESS_EFFORT_<KIND>, else HARNESS_EFFORT, else high. A set but empty value means: no --effort."""
-    for k in (f"HARNESS_EFFORT_{kind.upper()}", "HARNESS_EFFORT"):
+    keys = [f"HARNESS_EFFORT_{kind.upper()}"] + (["HARNESS_EFFORT_PLAN"] if kind == "repair" else []) + ["HARNESS_EFFORT"]
+    for k in keys:
         if k in os.environ:
             return os.environ[k]
     return "high"
@@ -743,8 +753,10 @@ def check_wrong_claim(text):
 
 
 def judge_leg(card, claim, check_out, branch):
-    """A read-only session decides whether the task's check itself is wrong. Returns (agreed, reason, result);
-    no verdict, or a failed session, counts as CHECK-OK."""
+    """A read-only session decides whether the task's check itself is wrong. Returns (verdict, reason, result)
+    with verdict "CHECK-OK", "CHECK-WRONG" (the run repairs the check) or "NEEDS-JOHN" (only for a major
+    architectural decision, a payment, or access the run cannot get); no verdict, or a failed session,
+    counts as CHECK-OK."""
     head = git("rev-parse", "HEAD")
     reqs = {q["id"]: q for q in spec()["requirements"]}
     r = session("judge", brief(
@@ -755,11 +767,52 @@ def judge_leg(card, claim, check_out, branch):
         git("switch", "-q", "-f", branch)
     git("reset", "-q", "--hard", head)                       # a judge leaves nothing behind
     sh(["git", "clean", "-qfd"])
-    verdicts = re.findall(r"^[\s>*_`#-]*VERDICT:\s*(CHECK-WRONG|CHECK-OK)\b[*_`]*[ \t:—–-]*(.*)$", r["text"], re.MULTILINE) if r["ok"] else []
+    verdicts = re.findall(r"^[\s>*_`#-]*VERDICT:\s*(CHECK-WRONG|CHECK-OK|NEEDS-JOHN)\b[*_`]*[ \t:—–-]*(.*)$", r["text"], re.MULTILINE) if r["ok"] else []
     if not verdicts:
-        return False, "the judge gave no verdict (counts as CHECK-OK)" + ("" if r["ok"] else f": {r['text'][:300]}"), r
+        return "CHECK-OK", "the judge gave no verdict (counts as CHECK-OK)" + ("" if r["ok"] else f": {r['text'][:300]}"), r
     word, reason = verdicts[-1]
-    return word == "CHECK-WRONG", reason.strip()[:600] or "no reason given", r
+    return word, reason.strip()[:600] or "no reason given", r
+
+
+def check_paths(card):
+    """The files a repair leg may change: the task's own check script and its requirements' acceptance checks
+    (every file named <rid>.* or <rid>/ under checks/acceptance/), plus the decisions log."""
+    own = card["check"].split()[-1]
+    return [own, DECISIONS] + [p for rid in card.get("requirements") or []
+                               for p in git("ls-files", "checks/acceptance").splitlines()
+                               if Path(p).name.split(".")[0] == rid or p.startswith(f"checks/acceptance/{rid}/")]
+
+
+def repair_leg(card, claim, why, branch):
+    """The judge agreed the check is wrong (and it is not John's to decide): a session rewrites the check so a
+    correct product can pass it, keeping what the check proves about the system, and logs the decision.
+    Returns (ok, summary, result). On success the task starts again from attempt 1."""
+    start = git("rev-parse", "HEAD")
+    allowed = check_paths(card)
+    r = session("repair", brief(
+        "repair", TASK_ID=card["id"], TITLE=card["title"], ACCEPTANCE=card["acceptance"], CHECK=card["check"],
+        REQS=", ".join(card.get("requirements") or []) or "none directly", CLAIM=claim, WHY=why,
+        PATHS="\n".join(f"- {p}" for p in allowed), DECISIONS=DECISIONS), start)
+    bad, kept = seal(start, branch, f"repair({card['id']}): check fixed without John", allowed=allowed)
+    if not r["ok"]:
+        return False, r["text"][:600], r
+    changed = [p for p in kept if p.startswith("checks/")]
+    problems = [] if changed else ["the repair session changed no check"]
+    problems += [f"{p} has a syntax error" for p in changed if p.endswith(".sh") and (ROOT / p).is_file()
+                 and sh(["bash", "-n", p]).returncode != 0]
+    if not problems:
+        gok, gout = run_gates()
+        if not gok:
+            problems.append(f"gates fail after the repair:\n{gout}")
+    if problems:
+        git("reset", "-q", "--hard", start)
+        sh(["git", "clean", "-qfd"])
+        return False, "repair rejected: " + "; ".join(problems)[:600], r
+    acc = re.findall(r"^[\s>*_`#-]*ACCEPTANCE:[*_`]*\s*(.+?)\s*$", r["text"], re.MULTILINE)
+    if acc and len(acc[-1]) >= 20:
+        card["acceptance"] = acc[-1].strip("*_` ")[:3000]
+    summ = re.findall(r"^[\s>*_`#-]*REPAIRED:[*_`]*\s*(.+?)\s*$", r["text"], re.MULTILINE)
+    return True, (summ[-1] if summ else f"changed {', '.join(changed)}")[:600] + (f"; undone: {', '.join(bad[:4])}" if bad else ""), r
 
 
 def audit_leg(branch):
@@ -802,6 +855,10 @@ def deliver(cards, branch, push):
     lines += ["", f"Deploy target: {s.get('deploy', {}).get('target', 'not stated')}. The auditor checked these statements; "
               "anything that needs John (see below) is not done by the run.", "", "## Left for John", ""]
     lines += [f"- {x}" for x in s.get("human_gates", [])] or ["- nothing listed in the spec"]
+    dec = ROOT / DECISIONS
+    lines += ["", "## Decisions the run made without John", "",
+              (f"Data and example choices the run made itself instead of stopping (full text: `{DECISIONS}`). "
+               "Review them; none changes the architecture." if dec.is_file() and dec.read_text().strip() else "- none")]
     lines += ["", "## How to run it", "", "See `spec/DESIGN.md` (section on running and testing) and `init.sh`.", "",
               "## Work log", "", "`PROGRESS.md` has one entry per step; `ledger.jsonl` has every task with its check and commit.", ""]
     (ROOT / "DELIVERY.md").write_text("\n".join(lines))
@@ -864,6 +921,33 @@ def cmd_status(_):
         print("\nlast stop: " + last.read_text().strip())
     if usage_summary(cards):
         print(usage_summary(cards))
+
+
+def cmd_unblock(a):
+    """Put a blocked task (or a blocked milestone's blocked tasks) back to todo, from a fresh attempt 1, after
+    John (or an interactive session on his word) fixed what blocked it. --note becomes the worker's feedback;
+    --acceptance replaces the task's acceptance criterion."""
+    if git("status", "--porcelain"):
+        sys.exit("cannot unblock: commit the fix first (the working tree has uncommitted changes)")
+    cards = load()
+    ids = by_id(cards)
+    c = ids.get(a.id)
+    if not c:
+        sys.exit(f"no card {a.id}")
+    tasks = kids(cards, c["id"]) if c.get("kind") == "milestone" else [c]
+    tasks = [t for t in tasks if t["state"] == "blocked"] if c.get("kind") == "milestone" else tasks
+    for t in tasks:
+        t.update(state="todo", attempts=0, note=a.note or "unblocked by John: start again from the current check")
+        if a.acceptance and t is c:
+            t["acceptance"] = a.acceptance
+    m = ids.get(c.get("parent")) if c.get("kind") == "task" else c
+    if m and m.get("state") == "blocked":
+        m.update(state="doing" if kids(cards, m["id"]) else "todo", note="")
+    for x in cards:
+        if x.get("kind") == "design" and x["state"] == "blocked" and a.id == x["id"]:
+            x.update(state="todo", attempts=0, note=a.note or "")
+    record(cards, a.id, "unblocked by John" + (f": {a.note[:200]}" if a.note else ""), "-", "the run picks it up", f"chore({a.id}): unblocked")
+    print(f"{a.id} unblocked ({', '.join(t['id'] for t in tasks) or 'no blocked tasks'} back to todo). Start the run: bash harness/run.sh")
 
 
 def notify(msg):
@@ -994,7 +1078,7 @@ def cmd_run(a):
                     legs += 1
                     say(f"leg {legs}: WORK {tid} (attempt {task.get('attempts', 0) + 1}) — {task['title']}")
                     ok, msg, r, start, ran = work_leg(task, branch)
-                    stage, vr, jr, agreed = "check", None, None, False
+                    stage, vr, jr, rr, agreed, repaired = "check", None, None, None, False, False
                     claim = check_wrong_claim(r["text"]) if ran and not ran[0] and task.get("attempts", 0) + 1 >= 2 else None
                     if ok:
                         legs += 1
@@ -1004,27 +1088,45 @@ def cmd_run(a):
                     elif claim:                              # the worker says the check itself is wrong: a judge decides
                         legs += 1
                         say(f"leg {legs}: JUDGE {tid} — worker says: {claim[:160]}")
-                        agreed, why, jr = judge_leg(task, claim, ran[1], branch)
-                        msg = (f"check wrong (judge agreed): {why}\nworker's claim: {claim[:400]}\n" if agreed
-                               else f"the worker said the check is wrong; the judge disagreed: {why}\n") + msg
+                        verdict, why, jr = judge_leg(task, claim, ran[1], branch)
+                        if verdict == "CHECK-WRONG" and task.get("repairs", 0) >= MAX_REPAIRS:
+                            msg = f"the judge agreed the check is wrong again, after {MAX_REPAIRS} repairs: {why}\n" + msg
+                        elif verdict == "CHECK-WRONG":       # not John's to decide: the run fixes the check and goes on
+                            legs += 1
+                            say(f"leg {legs}: REPAIR {tid} — the judge agreed the check is wrong: {why[:160]}")
+                            repaired, rmsg, rr = repair_leg(task, claim, why, branch)
+                            msg = (f"the check was fixed by the run (judge agreed it was wrong: {why[:300]}): {rmsg}\n"
+                                   "Do the task against the fixed check and acceptance criterion.\n" if repaired
+                                   else f"the judge agreed the check is wrong but the repair failed ({rmsg}); judge: {why}\n") + msg
+                        agreed = verdict == "NEEDS-JOHN"
+                        if agreed:
+                            msg = f"needs John (judge): {why}\nworker's claim: {claim[:400]}\n" + msg
+                        elif verdict == "CHECK-OK":
+                            msg = f"the worker said the check is wrong; the judge disagreed: {why}\n" + msg
                     head = git("rev-parse", "--short", "HEAD")
                     if ok:
                         streak = 0
                         task.update(state="done", commit=head, checks="pass", note=f"verified: {msg[:300]}")
+                    elif repaired:
+                        streak = 0
+                        task.update(state="todo", attempts=0, repairs=task.get("repairs", 0) + 1, note=msg[:2000])
                     else:
                         streak += 1
                         task["attempts"] = task.get("attempts", 0) + 1
                         task["note"] = msg[:2000] if agreed else f"attempt {task['attempts']} failed at {stage}: {msg[:1800]}"
                         task["state"] = "blocked" if agreed or task["attempts"] >= MAX_ATTEMPTS else "todo"
                     record(cards, tid, f"work leg ({r['turns']} turns, {r['secs']}s)" + (f" + verify leg ({vr['turns']} turns, {vr['secs']}s)" if vr else "")
-                           + (f" + judge leg ({jr['turns']} turns, {jr['secs']}s)" if jr else "") + f": {msg.splitlines()[0][:200]}",
+                           + (f" + judge leg ({jr['turns']} turns, {jr['secs']}s)" if jr else "")
+                           + (f" + repair leg ({rr['turns']} turns, {rr['secs']}s)" if rr else "") + f": {msg.splitlines()[0][:200]}",
                            f"{task['check']} + checks/run_gates.sh + independent verify -> " + ("pass" if ok else f"fail at {stage}")
-                           + ("" if not jr else " (judge: check wrong)" if agreed else " (judge: check ok)"),
-                           "next eligible task" if ok else ("blocked: the check needs John" if agreed else "blocked after 3 attempts"
+                           + ("" if not jr else " (judge: needs John)" if agreed else " (judge: check wrong, repaired)" if repaired
+                              else " (judge: check wrong, repair failed)" if rr else " (judge: check ok)"),
+                           "next eligible task" if ok else ("blocked: needs John" if agreed else "redo the task against the fixed check"
+                                                            if repaired else "blocked after 3 attempts"
                                                             if task["state"] == "blocked" else "retry with this failure as feedback"),
-                           f"chore({tid}): " + ("done" if ok else task["state"]), [r, vr, jr])
+                           f"chore({tid}): " + ("done" if ok else "check repaired" if repaired else task["state"]), [r, vr, jr, rr])
                     if agreed:
-                        notify(f"{tid} blocked, its check needs John: {msg.splitlines()[0][:150]}")
+                        notify(f"{tid} blocked, needs John: {msg.splitlines()[0][:150]}")
                     say(f"  -> {'DONE' if ok else task['state'].upper()}: {' '.join(msg.split())[:220]}")
                     continue
                 if any(k["state"] == "blocked" for k in ks):
@@ -1108,6 +1210,11 @@ def main():
     r.add_argument("--no-push", dest="push", action="store_false", help="do not push the branch or open a pull request")
     r.set_defaults(fn=cmd_run)
     sub.add_parser("status").set_defaults(fn=cmd_status)
+    u = sub.add_parser("unblock", help="put a blocked task (or a milestone's blocked tasks) back to todo")
+    u.add_argument("id")
+    u.add_argument("--note", default="", help="feedback the next worker reads")
+    u.add_argument("--acceptance", default="", help="replace the task's acceptance criterion")
+    u.set_defaults(fn=cmd_unblock)
     a = p.parse_args()
     os.chdir(ROOT)
     a.fn(a)

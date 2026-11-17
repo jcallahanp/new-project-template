@@ -165,31 +165,63 @@ if python3 -I harness/loop.py run --no-push >/dev/null 2>&1; then fail "the loop
 # "check is wrong" path (MOCK_SCENARIO=judge, see mock_claude): a fresh repo, a fake notify-send that logs to the mock's calls
 make_repo "$tmp/repo2"
 mkdir -p "$tmp/bin"; printf '#!/bin/sh\necho "NOTIFY $*" >> "$MOCK_STATE/calls"\n' > "$tmp/bin/notify-send"; chmod +x "$tmp/bin/notify-send"
-set +e; MOCK_SCENARIO=judge MOCK_STATE="$tmp/mock2" PATH="$tmp/bin:$PATH" python3 -I harness/loop.py run --no-push > "$tmp/run.log" 2>&1; rc=$?; set -e
+# The judge agrees the check is wrong (CHECK-WRONG): the run repairs the check itself and does not stop for John.
+# 15 legs = design, plan, M1.T1 (work, work, judge, repair, work, verify), M1.T2 (work, verify), M1.T3 (work, work, judge, work, verify).
+set +e; MOCK_SCENARIO=judge MOCK_STATE="$tmp/mock2" PATH="$tmp/bin:$PATH" python3 -I harness/loop.py run --no-push --max-legs 15 > "$tmp/run.log" 2>&1; rc=$?; set -e
 calls="$tmp/mock2/calls"
-[ "$rc" = 3 ] || fail "judge run: loop exited $rc, expected 3 (M1 blocked by M1.T1)"
+[ "$rc" = 3 ] && grep -q 'leg budget used' .harness-run/last-stop.txt || fail "judge run: want the leg budget stop after all three tasks (rc $rc): $(tail -5 "$tmp/run.log")"
 python3 -I - > "$tmp/judge.txt" 2>&1 <<'PY2' || fail "judge run ledger: $(cat "$tmp/judge.txt")"
 import json
 cards = {c["id"]: c for c in map(json.loads, open("ledger.jsonl"))}
 t1, t2, t3 = cards["M1.T1"], cards["M1.T2"], cards["M1.T3"]
-assert (t1["state"], t1["attempts"]) == ("blocked", 2), f"M1.T1 {t1['state']} after {t1['attempts']} attempts: want blocked at once on attempt 2"
-assert t1["note"].startswith("check wrong (judge agreed): JUDGE-T1-REASON"), t1["note"]
+assert (t1["state"], t1.get("repairs")) == ("done", 1), f"M1.T1 {t1['state']}, repairs {t1.get('repairs')}: want done after one repair"
+assert [g["kind"] for g in t1["legs"]] == ["work", "work", "judge", "repair", "work", "verify"], [g["kind"] for g in t1["legs"]]
+assert t1["acceptance"].startswith("REPAIRED-ACCEPTANCE"), t1["acceptance"]
 assert (t2["state"], t3["state"], t3["attempts"]) == ("done", "done", 2), f"other tasks did not run on: {t2['state']}, {t3['state']} ({t3['attempts']})"
 assert [g["kind"] for g in t3["legs"]] == ["work", "work", "judge", "work", "verify"], [g["kind"] for g in t3["legs"]]
-assert [g["kind"] for g in t1["legs"]] == ["work", "work", "judge"], [g["kind"] for g in t1["legs"]]
-j = [g for g in t1["legs"] + t3["legs"] if g["kind"] == "judge"]
+j = [g for g in t1["legs"] + t3["legs"] if g["kind"] in ("judge", "repair")]
 assert all((g["model"], g["effort"], g["output"]) == ("claude-fable-5-2", "high", 200) for g in j), j
+assert cards["M1"]["state"] != "blocked", cards["M1"]
 PY2
 [ "$(grep '^JUDGE' "$calls" | cut -d' ' -f2,4 | tr '\n' ' ')" = "claude-fable-5-2 M1.T1 claude-fable-5-2 M1.T3 " ] \
   || fail "want one judge leg for M1.T1 and one for M1.T3, both on attempt 2 (a claim on attempt 1 is ignored): $(grep '^JUDGE' "$calls")"
-first_notify=$(grep -n '^NOTIFY' "$calls" | head -1 | cut -d: -f1); t2_work=$(grep -n '^WORKER .* M1.T2$' "$calls" | head -1 | cut -d: -f1)
-[ -n "$first_notify" ] && [ "$first_notify" -lt "$t2_work" ] || fail "John was not notified at once when the judge agreed: $(cat "$calls")"
-grep -q 'M1.T1 blocked, its check needs John' .harness-run/alerts.log || fail "the alert is not in .harness-run/alerts.log"
-grep '^NOTIFY' "$calls" | head -1 | grep -q 'M1.T1 blocked, its check needs John: check wrong (judge agreed)' || fail "notification text: $(grep '^NOTIFY' "$calls")"
+[ "$(grep -c '^REPAIR' "$calls")" = 1 ] || fail "want exactly one repair leg (for M1.T1): $(grep '^REPAIR' "$calls")"
+grep -q '= 5' checks/tasks/M1.T1.sh || fail "the repaired check was not kept"
+[ "$(cat checks/acceptance/R2.sh)" = '[ "$(python3 app/sub.py 2 5)" = -3 ]' ] || fail "the repair leg changed a check it may not touch (R2.sh)"
+grep -q 'M1.T1' notes/decisions.md || fail "the repair is not logged in notes/decisions.md"
+grep -q 'needs John' .harness-run/alerts.log && fail "a wrong check that the run can fix was sent to John: $(cat .harness-run/alerts.log)"
+grep -q 'REPAIR-T1-SUMMARY' "$tmp/mock2/WORKER-M1.T1-3.txt" || fail "the repair summary is not in the next worker's brief"
+grep -q 'ATTEMPT: 1' "$tmp/mock2/WORKER-M1.T1-3.txt" || fail "after a repair the task must start again from attempt 1"
 grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-3.txt" || fail "the judge's reason for CHECK-OK is not in the next attempt's brief"
 grep -q 'JUDGE-T3-REASON' "$tmp/mock2/WORKER-M1.T3-2.txt" && fail "mock: the judge's reason appeared before the judge ran"
 grep -q 'MARKER-T2-CHECK-OUTPUT sub ran' "$tmp/mock2/VERIFIER-M1.T2-1.txt" || fail "the verify brief does not carry the loop's check output"
 grep -q '  PASS' "$tmp/mock2/VERIFIER-M1.T2-1.txt" || fail "the verify brief does not carry the loop's gate output"
+
+# The judge says NEEDS-JOHN (access only John can give): the task is blocked at once and John is notified.
+make_repo "$tmp/repo2b"
+set +e; MOCK_SCENARIO=judge MOCK_JUDGE_T1=needs-john MOCK_STATE="$tmp/mock2b" PATH="$tmp/bin:$PATH" python3 -I harness/loop.py run --no-push > "$tmp/run2b.log" 2>&1; rc=$?; set -e
+calls="$tmp/mock2b/calls"
+[ "$rc" = 3 ] || fail "needs-john run: loop exited $rc, expected 3 (M1 blocked by M1.T1)"
+python3 -I - > "$tmp/judge2b.txt" 2>&1 <<'PY2' || fail "needs-john run ledger: $(cat "$tmp/judge2b.txt")"
+import json
+cards = {c["id"]: c for c in map(json.loads, open("ledger.jsonl"))}
+t1, t2, t3 = cards["M1.T1"], cards["M1.T2"], cards["M1.T3"]
+assert (t1["state"], t1["attempts"]) == ("blocked", 2), f"M1.T1 {t1['state']} after {t1['attempts']} attempts: want blocked at once on attempt 2"
+assert t1["note"].startswith("needs John (judge): JUDGE-T1-REASON"), t1["note"]
+assert [g["kind"] for g in t1["legs"]] == ["work", "work", "judge"], [g["kind"] for g in t1["legs"]]
+assert (t2["state"], t3["state"]) == ("done", "done"), f"other tasks did not run on: {t2['state']}, {t3['state']}"
+PY2
+grep -q '^REPAIR' "$calls" && fail "a NEEDS-JOHN verdict must not start a repair leg"
+first_notify=$(grep -n '^NOTIFY' "$calls" | head -1 | cut -d: -f1); t2_work=$(grep -n '^WORKER .* M1.T2$' "$calls" | head -1 | cut -d: -f1)
+[ -n "$first_notify" ] && [ "$first_notify" -lt "$t2_work" ] || fail "John was not notified at once on NEEDS-JOHN: $(cat "$calls")"
+grep -q 'M1.T1 blocked, needs John' .harness-run/alerts.log || fail "the alert is not in .harness-run/alerts.log"
+grep '^NOTIFY' "$calls" | head -1 | grep -q 'M1.T1 blocked, needs John: needs John (judge)' || fail "notification text: $(grep '^NOTIFY' "$calls")"
+# John fixes it and unblocks: the task goes back to todo from attempt 1, the milestone is no longer blocked
+python3 -I harness/loop.py unblock M1.T1 --note "UNBLOCK-NOTE account created" >/dev/null || fail "loop.py unblock failed"
+python3 -I -c '
+import json; c = {x["id"]: x for x in map(json.loads, open("ledger.jsonl"))}
+assert (c["M1.T1"]["state"], c["M1.T1"]["attempts"], c["M1.T1"]["note"]) == ("todo", 0, "UNBLOCK-NOTE account created"), c["M1.T1"]
+assert c["M1"]["state"] == "doing", c["M1"]' || fail "unblock did not reset M1.T1 and M1"
 # Secrets (C10): a fake `secret` helper with two projects; the other project's token is in the shell (never used).
 # The project's spec secrets (a multi-line one too) reach checks and run sessions, the other project's keys do not, a
 # session's `secret set` is seen by a later check, check_scope catches a vault value or BAO_TOKEN in a tracked file and
@@ -391,4 +423,4 @@ sleep 4    # past the mock's 3 s sleep: a surviving session would have committed
 grep -q 'interrupted' "$tmp/int.txt" || fail "the loop did not stop as interrupted (SIG$sig): $(cat "$tmp/int.txt")"
 done
 
-echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged both ways, ignored on attempt 1; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback; vault-project required; work-model probe; Ctrl+C, SIGHUP and SIGTERM kill the session)"
+echo "SELFTEST PASS (design, plan after a limit wait, work with escalation, 429 retry and limit fallback, verify with fallback and the loop's check output, replan, audit gap, fix, audit, deliver; usage recorded; CHECK-WRONG judged three ways (repaired by the run, needs John, check ok), ignored on attempt 1; unblock; vault secrets scoped per project, stored by a session, guarded in git; deploy guard; .env fallback; vault-project required; work-model probe; Ctrl+C, SIGHUP and SIGTERM kill the session)"

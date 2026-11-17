@@ -46,7 +46,10 @@ Write exactly these files, nothing else (the sixth only for a web UI):
 Rules:
 - Do not write product code, tasks or acceptance checks: later sessions do that from your design.
 - Do not add scope. If the spec cannot be designed without something only John can supply, write
-  nothing and say exactly what is missing as your final message.
+  nothing and say exactly what is missing as your final message. Only three things count (see
+  CLAUDE.md, "What needs John"): a major architectural decision the spec leaves open, a payment, or
+  access the run cannot get. Choices about data, examples or content are yours: make them, note them
+  in `notes/decisions.md`, and design.
 - Secrets are named in the spec; the loop puts their values in the environment of every check (from
   the vault or `.env`) and, with the vault, of every session. Never read `.env`, never print a value or put one in a file. A
   secret with `"created_by": "agent"` does not exist yet: say in the design which task creates it

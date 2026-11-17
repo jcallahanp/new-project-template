@@ -53,7 +53,14 @@ Rules for a good plan:
 - Every requirement above appears in the `requirements` of at least one task.
 - Order tasks so early ones produce what later ones need; put the riskiest unknown first. Include the
   tests in the task that writes the code, not as a separate task at the end.
+- Never make a check depend on one specific piece of outside data existing: a named company, job
+  posting, contact, résumé or sample in the spec's examples is an illustration. Check the kind, amount
+  and honesty of the data (for example "at least 4 real postings expected `strong`") and test the
+  system's behaviour on it, never "the Red Hat posting must be there". Never tell a worker to stop if a
+  named item cannot be found; tell it to use the closest real one and note the substitution.
 - If the milestone cannot be planned without something only John can supply, write no plan: say
-  exactly what is missing as your final message.
+  exactly what is missing as your final message. Only three things count (see CLAUDE.md, "What needs
+  John"): a major architectural decision, a payment, or access the run cannot get. For anything else,
+  choose the reasonable option, write it in `notes/decisions.md`, and plan.
 
 Finish with a two-line summary of the plan.

@@ -14,7 +14,9 @@ $MOCK_STATE/<kind>-<task>-<n>.txt.
 
 MOCK_SCENARIO=judge is a second, smaller run for the "check is wrong" path. M1.T1's check is impossible
 (2 + 3 must print 6): its worker claims CHECK-WRONG on attempts 1 and 2, changing nothing on attempt 2, and the
-judge agrees. M1.T2 is
+judge agrees (CHECK-WRONG). The REPAIR session fixes the check to 5, logs notes/decisions.md, also tries to edit
+R2's acceptance check (must be undone), and the task is done again from attempt 1 (the worker adds a note).
+With MOCK_JUDGE_T1=needs-john the judge says NEEDS-JOHN instead and M1.T1 is blocked for John. M1.T2 is
 independent and passes; its check prints a line the verifier must see in its brief. M1.T3's worker fails
 attempts 1 and 2 with its own bug and claims CHECK-WRONG on both; the judge disagrees, and attempt 3 is
 right. No provider errors or limits in this scenario.
@@ -108,6 +110,10 @@ if scenario == "judge" and kind == "PLANNER":
     out("3 tasks")
 if scenario == "judge" and kind == "WORKER":
     attempt = int(re.search(r"ATTEMPT: (\d+)", prompt).group(1))
+    if tid == "M1.T1" and "fixed by the run" in prompt:                         # after the repair: the code already passes
+        write("notes/M1.T1/after-repair.md", "checked against the fixed check\n")
+        commit(f"{tid}: note")
+        out("add.py prints 5; the fixed check passes")
     if tid == "M1.T1":
         if attempt == 1:                                                          # attempt 2: the code is right, nothing to change
             write("app/add.py", "import sys\nprint(int(sys.argv[1]) + int(sys.argv[2]))\n")
@@ -121,9 +127,20 @@ if scenario == "judge" and kind == "WORKER":
     commit(f"{tid}: work")
     out("done")
 if kind == "JUDGE":
+    if tid == "M1.T1" and os.environ.get("MOCK_JUDGE_T1") == "needs-john":
+        out("Read checks/tasks/M1.T1.sh.\n\n**VERDICT: NEEDS-JOHN** — JUDGE-T1-REASON access: the check needs an account only John can create")
     if tid == "M1.T1":
         out("Read checks/tasks/M1.T1.sh and R1.\n\n> **VERDICT: CHECK-WRONG** — JUDGE-T1-REASON the check expects 6 for 2 + 3; R1 asks for the sum (5)")
     out("R2 says first minus second.\n\nVERDICT: CHECK-OK - JUDGE-T3-REASON 2 - 5 is -3; remove the abs() in app/sub.py")
+if kind == "REPAIR":
+    write("checks/tasks/M1.T1.sh", '[ "$(python3 app/add.py 2 3)" = 5 ]\n')
+    write("checks/acceptance/R2.sh", "exit 0\n")                                 # not its file: must be undone
+    Path("notes").mkdir(exist_ok=True)
+    with open("notes/decisions.md", "a") as f:
+        f.write(f"- {tid}: the check wanted 6 for 2 + 3; it now wants the sum, 5 (judge: R1 asks for the sum)\n")
+    commit(f"{tid}: repair")
+    out("Fixed the expected value.\n\nACCEPTANCE: REPAIRED-ACCEPTANCE python3 app/add.py 2 3 prints 5 on one line\n"
+        "**REPAIRED:** REPAIR-T1-SUMMARY the check now expects the sum (5)")
 if kind == "DESIGN":
     write("spec/DESIGN.md", "# Design\n\n" + "Two small Python command-line programs under app/. " * 20 + "\n\n## Running and testing\n\npython3 app/add.py 2 3\n")
     write("plan/milestones.json", json.dumps([{"id": "M1", "title": "Both calculators", "goal": "app/add.py and app/sub.py print the right result for integers.", "requirements": ["R1", "R2"]}]))
